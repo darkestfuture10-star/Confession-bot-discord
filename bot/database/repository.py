@@ -52,3 +52,45 @@ class ServerRepository:
         await self.session.refresh(server)
 
         return server
+
+    async def set_approval(
+            self,
+            server_id: int,
+            enabled: bool,
+    ) -> Server:
+        server = await self.get_or_create(server_id)
+
+        server.approval_enabled = enabled
+
+        await self.session.commit()
+        await self.session.refresh(server)
+
+        return server
+
+    async def set_logging(
+            self,
+            server_id: int,
+            enabled: bool,
+    ) -> Server:
+        server = await self.get_or_create(server_id)
+
+        server.logging_enabled = enabled
+
+        await self.session.commit()
+        await self.session.refresh(server)
+
+        return server
+
+    async def set_logging_channel(
+            self,
+            server_id: int,
+            channel_id: int,
+    ) -> Server:
+        server = await self.get_or_create(server_id)
+
+        server.logging_channel_id = channel_id
+
+        await self.session.commit()
+        await self.session.refresh(server)
+
+        return server

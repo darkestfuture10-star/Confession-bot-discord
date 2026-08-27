@@ -35,7 +35,7 @@ async def test_database_connection():
 
 
 async def initialize_database():
-    """Create missing database tables."""
+    """Create database tables that do not already exist."""
 
     from bot.database import models
 
@@ -43,6 +43,18 @@ async def initialize_database():
         await connection.run_sync(
             Base.metadata.create_all
         )
+
+        #temp test
+        await connection.execute(
+            text(
+                """
+                ALTER TABLE servers
+                ADD COLUMN IF NOT EXISTS approval_enabled
+                BOOLEAN NOT NULL DEFAULT TRUE
+                """
+            )
+        )
+        #temp test
 
 
 def get_session() -> AsyncSession:

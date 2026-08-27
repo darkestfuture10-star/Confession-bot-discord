@@ -18,6 +18,8 @@ class ConfessionChannelView(discord.ui.View):
         self.channel_select.callback = self.select_channel
         self.add_item(self.channel_select)
 
+    # Select
+
     async def select_channel(
         self,
         interaction: discord.Interaction,
@@ -115,6 +117,208 @@ class ModeratorRoleView(discord.ui.View):
         )
 
 
+class ApprovalView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    # Button
+
+    @discord.ui.button(
+        label="Enable",
+        style=discord.ButtonStyle.success,
+    )
+    async def enable(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        await self.set_approval(interaction, True)
+
+    # Button
+
+    @discord.ui.button(
+        label="Disable",
+        style=discord.ButtonStyle.danger,
+    )
+    async def disable(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        await self.set_approval(interaction, False)
+
+    async def set_approval(
+        self,
+        interaction: discord.Interaction,
+        enabled: bool,
+    ):
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ This can only be used in a server.",
+                ephemeral=True,
+            )
+            return
+
+        session = get_session()
+
+        try:
+            repository = ServerRepository(session)
+
+            await repository.set_approval(
+                interaction.guild.id,
+                enabled,
+            )
+
+        except Exception:
+            await session.rollback()
+
+            await interaction.response.send_message(
+                "❌ Failed to update approval settings.",
+                ephemeral=True,
+            )
+
+            raise
+
+        finally:
+            await session.close()
+
+        status = "enabled" if enabled else "disabled"
+
+        await interaction.response.send_message(
+            f"✅ Moderator approval {status}.",
+            ephemeral=True,
+        )
+
+
+class LoggingView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    # Button
+
+    @discord.ui.button(
+        label="Enable",
+        style=discord.ButtonStyle.success,
+    )
+    async def enable(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        await self.set_logging(interaction, True)
+
+    # Button
+
+    @discord.ui.button(
+        label="Disable",
+        style=discord.ButtonStyle.danger,
+    )
+    async def disable(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        await self.set_logging(interaction, False)
+
+    async def set_logging(
+        self,
+        interaction: discord.Interaction,
+        enabled: bool,
+    ):
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ This can only be used in a server.",
+                ephemeral=True,
+            )
+            return
+
+        session = get_session()
+
+        try:
+            repository = ServerRepository(session)
+
+            await repository.set_logging(
+                interaction.guild.id,
+                enabled,
+            )
+
+        except Exception:
+            await session.rollback()
+
+            await interaction.response.send_message(
+                "❌ Failed to update logging settings.",
+                ephemeral=True,
+            )
+
+            raise
+
+        finally:
+            await session.close()
+
+        status = "enabled" if enabled else "disabled"
+
+        await interaction.response.send_message(
+            f"✅ Logging {status}.",
+            ephemeral=True,
+        )
+
+
+class LoggingChannelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+        self.channel_select = discord.ui.ChannelSelect(
+            placeholder="Select a logging channel",
+            channel_types=[discord.ChannelType.text],
+        )
+
+        self.channel_select.callback = self.select_channel
+        self.add_item(self.channel_select)
+
+    # Select
+
+    async def select_channel(
+        self,
+        interaction: discord.Interaction,
+    ):
+        channel = self.channel_select.values[0]
+
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ This can only be used in a server.",
+                ephemeral=True,
+            )
+            return
+
+        session = get_session()
+
+        try:
+            repository = ServerRepository(session)
+
+            await repository.set_logging_channel(
+                interaction.guild.id,
+                channel.id,
+            )
+
+        except Exception:
+            await session.rollback()
+
+            await interaction.response.send_message(
+                "❌ Failed to save the logging channel.",
+                ephemeral=True,
+            )
+
+            raise
+
+        finally:
+            await session.close()
+
+        await interaction.response.send_message(
+            f"✅ Logging channel set to {channel.mention}.",
+            ephemeral=True,
+        )
+
+
 class ConfigView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=300)
@@ -165,7 +369,8 @@ class ConfigView(discord.ui.View):
         button: discord.ui.Button,
     ):
         await interaction.response.send_message(
-            "Approval configuration coming next.",
+            "Choose whether confessions require moderator approval.",
+            view=ApprovalView(),
             ephemeral=True,
         )
 
@@ -181,7 +386,8 @@ class ConfigView(discord.ui.View):
         button: discord.ui.Button,
     ):
         await interaction.response.send_message(
-            "Logging configuration coming next.",
+            "Choose whether confession logging is enabled.",
+            view=LoggingView(),
             ephemeral=True,
         )
 
@@ -197,7 +403,8 @@ class ConfigView(discord.ui.View):
         button: discord.ui.Button,
     ):
         await interaction.response.send_message(
-            "Logging channel configuration coming next.",
+            "Select the logging channel below.",
+            view=LoggingChannelView(),
             ephemeral=True,
         )
 
@@ -274,6 +481,28 @@ class Config(commands.Cog):
                 if role:
                     moderator_role = role.mention
 
+            approval_status = (
+                "✅ Enabled"
+                if server.approval_enabled
+                else "❌ Disabled"
+            )
+
+            logging_status = (
+                "✅ Enabled"
+                if server.logging_enabled
+                else "❌ Disabled"
+            )
+
+            logging_channel = "Not configured"
+
+            if server.logging_channel_id:
+                channel = interaction.guild.get_channel(
+                    server.logging_channel_id
+                )
+
+                if channel:
+                    logging_channel = channel.mention
+
         finally:
             await session.close()
 
@@ -299,19 +528,19 @@ class Config(commands.Cog):
 
         embed.add_field(
             name="Approval",
-            value="✅ Enabled",
+            value=approval_status,
             inline=True,
         )
 
         embed.add_field(
             name="Logging",
-            value="✅ Enabled",
+            value=logging_status,
             inline=True,
         )
 
         embed.add_field(
             name="Logging Channel",
-            value="Not configured",
+            value=logging_channel,
             inline=False,
         )
 
