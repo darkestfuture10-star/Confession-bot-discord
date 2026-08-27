@@ -58,6 +58,12 @@ class ConfessionBot(commands.Bot):
             logger.exception("Database setup failed.")
             raise
 
+        # Cogs
+
+        await self.load_extension("bot.cogs.config")
+
+        # Slash command synchronization
+
         synced = await self.tree.sync()
 
         logger.info(
