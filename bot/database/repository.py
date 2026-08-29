@@ -151,3 +151,22 @@ class ConfessionRepository:
     async def add_log(self, confession_id: int, action: str, actor_id: int | None = None, details: str | None = None) -> None:
         self.session.add(ModerationLog(confession_id=confession_id, action=action, actor_id=actor_id, details=details))
         await self.session.commit()
+
+    async def list_pending(self, server_id: int, limit: int = 25) -> list[Confession]:
+        """Oldest-first queue of confessions awaiting moderator review."""
+        result = await self.session.execute(
+            select(Confession)
+            .where(Confession.server_id == server_id, Confession.status == "pending")
+            .order_by(Confession.submitted_at.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def get_logs(self, confession_id: int) -> list[ModerationLog]:
+        """Full audit trail for a single confession, oldest first."""
+        result = await self.session.execute(
+            select(ModerationLog)
+            .where(ModerationLog.confession_id == confession_id)
+            .order_by(ModerationLog.created_at.asc())
+        )
+        return list(result.scalars().all())

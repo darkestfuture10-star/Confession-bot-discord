@@ -10,6 +10,7 @@ from bot.database.connection import (
     initialize_database,
     test_database_connection,
 )
+from bot.cogs.confession import ModerationView
 from bot.errors.handlers import handle_app_command_error
 from bot.utils.logger import get_logger, setup_logging
 
@@ -58,9 +59,18 @@ class ConfessionBot(commands.Bot):
             logger.exception("Database setup failed.")
             raise
 
+        # Persistent views
+
+        # Approve/Reject buttons on review messages must be re-registered on every
+        # restart, or clicks on messages sent before the restart silently fail.
+        self.add_view(ModerationView())
+
         # Cogs
 
         await self.load_extension("bot.cogs.config")
+        await self.load_extension("bot.cogs.confession")
+        await self.load_extension("bot.cogs.moderation")
+        await self.load_extension("bot.cogs.logs")
 
         # Slash command synchronization
 
