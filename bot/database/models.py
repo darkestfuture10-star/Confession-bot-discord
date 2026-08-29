@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, String
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from bot.database.connection import Base
@@ -61,3 +61,38 @@ class Server(Base):
         onupdate=datetime.utcnow,
         nullable=False,
     )
+
+
+class Confession(Base):
+    """A submitted confession. The author ID is never used in public output."""
+
+    __tablename__ = "confessions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    server_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("servers.id", ondelete="CASCADE"), index=True
+    )
+    # Keep the existing database column name while using clearer application wording.
+    author_id: Mapped[int] = mapped_column("user_id", BigInteger, nullable=False, index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False, index=True)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reviewed_by_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    public_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class ModerationLog(Base):
+    """Immutable record of a confession lifecycle event."""
+
+    __tablename__ = "moderation_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    confession_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("confessions.id", ondelete="CASCADE"), index=True
+    )
+    actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    action: Mapped[str] = mapped_column(String(30), nullable=False)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

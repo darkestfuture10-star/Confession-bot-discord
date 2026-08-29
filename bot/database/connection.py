@@ -35,7 +35,7 @@ async def test_database_connection():
 
 
 async def initialize_database():
-    """Create database tables that do not already exist."""
+    """Create tables and safely upgrade schemas created by earlier phases."""
 
     from bot.database import models
 
@@ -44,7 +44,6 @@ async def initialize_database():
             Base.metadata.create_all
         )
 
-        #temp test
         await connection.execute(
             text(
                 """
@@ -54,7 +53,33 @@ async def initialize_database():
                 """
             )
         )
-        #temp test
+
+        # ``create_all`` intentionally does not alter existing PostgreSQL tables.
+        # These additive migrations preserve submissions made with earlier builds.
+        await connection.execute(
+            text(
+                """
+                ALTER TABLE confessions
+                ADD COLUMN IF NOT EXISTS user_id BIGINT,
+                ADD COLUMN IF NOT EXISTS content TEXT,
+                ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP WITHOUT TIME ZONE,
+                ADD COLUMN IF NOT EXISTS reviewed_by_id BIGINT,
+                ADD COLUMN IF NOT EXISTS rejection_reason TEXT,
+                ADD COLUMN IF NOT EXISTS public_message_id BIGINT
+                """
+            )
+        )
+        await connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_confessions_server_id ON confessions (server_id)")
+        )
+        await connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_confessions_user_id ON confessions (user_id)")
+        )
+        await connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_confessions_status ON confessions (status)")
+        )
 
 
 def get_session() -> AsyncSession:

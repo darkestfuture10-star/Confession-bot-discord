@@ -1,7 +1,9 @@
-from sqlalchemy import select
+from datetime import datetime
+
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.database.models import Server
+from bot.database.models import Confession, ModerationLog, Server
 
 
 class ServerRepository:
@@ -94,3 +96,58 @@ class ServerRepository:
         await self.session.refresh(server)
 
         return server
+
+
+class ConfessionRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, server_id: int, author_id: int, content: str, status: str) -> Confession:
+        confession = Confession(server_id=server_id, author_id=author_id, content=content, status=status)
+        self.session.add(confession)
+        await self.session.flush()
+        await self.session.commit()
+        await self.session.refresh(confession)
+        return confession
+
+    async def get(self, confession_id: int, server_id: int) -> Confession | None:
+        result = await self.session.execute(
+            select(Confession).where(Confession.id == confession_id, Confession.server_id == server_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_for_author(self, confession_id: int, server_id: int, author_id: int) -> Confession | None:
+        result = await self.session.execute(
+            select(Confession).where(
+                Confession.id == confession_id,
+                Confession.server_id == server_id,
+                Confession.author_id == author_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def review(self, confession_id: int, server_id: int, moderator_id: int, status: str, reason: str | None = None) -> bool:
+        """Atomically transition a pending confession, preventing double moderation."""
+        result = await self.session.execute(
+            update(Confession)
+            .where(Confession.id == confession_id, Confession.server_id == server_id, Confession.status == "pending")
+            .values(status=status, reviewed_by_id=moderator_id, reviewed_at=datetime.utcnow(), rejection_reason=reason)
+        )
+        await self.session.commit()
+        return result.rowcount == 1
+
+    async def set_public_message(self, confession_id: int, message_id: int) -> None:
+        await self.session.execute(
+            update(Confession).where(Confession.id == confession_id).values(public_message_id=message_id)
+        )
+        await self.session.commit()
+
+    async def set_status(self, confession_id: int, status: str) -> None:
+        await self.session.execute(
+            update(Confession).where(Confession.id == confession_id).values(status=status)
+        )
+        await self.session.commit()
+
+    async def add_log(self, confession_id: int, action: str, actor_id: int | None = None, details: str | None = None) -> None:
+        self.session.add(ModerationLog(confession_id=confession_id, action=action, actor_id=actor_id, details=details))
+        await self.session.commit()
