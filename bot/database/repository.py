@@ -59,6 +59,25 @@ class ServerRepository:
         await self.session.refresh(server)
         return server
 
+    async def allocate_reply_number(self, server_id: int) -> int:
+        """Atomically claim the next sequential public reply number."""
+        result = await self.session.execute(
+            update(Server)
+            .where(Server.id == server_id)
+            .values(next_reply_number=Server.next_reply_number + 1)
+            .returning(Server.next_reply_number)
+        )
+        await self.session.commit()
+        new_value = result.scalar_one()
+        return new_value - 1
+
+    async def set_theme(self, server_id: int, theme: str) -> Server:
+        server = await self.get_or_create(server_id)
+        server.theme = theme
+        await self.session.commit()
+        await self.session.refresh(server)
+        return server
+
     async def set_last_confession_message(self, server_id: int, message_id: int | None) -> None:
         await self.session.execute(
             update(Server).where(Server.id == server_id).values(last_confession_message_id=message_id)
@@ -69,14 +88,6 @@ class ServerRepository:
 class ConfessionRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
-
-    async def create(self, server_id: int, author_id: int, content: str, status: str, parent_id: int | None = None) -> Confession:
-        confession = Confession(server_id=server_id, author_id=author_id, content=content, status=status, parent_id=parent_id)
-        self.session.add(confession)
-        await self.session.flush()
-        await self.session.commit()
-        await self.session.refresh(confession)
-        return confession
 
     async def get(self, confession_id: int, server_id: int) -> Confession | None:
         result = await self.session.execute(
@@ -103,6 +114,14 @@ class ConfessionRepository:
         )
         await self.session.commit()
         return result.rowcount == 1
+
+    async def create(self, server_id: int, author_id: int, content: str, status: str, parent_id: int | None = None, reply_number: int | None = None) -> Confession:
+        confession = Confession(server_id=server_id, author_id=author_id, content=content, status=status, parent_id=parent_id, reply_number=reply_number)
+        self.session.add(confession)
+        await self.session.flush()
+        await self.session.commit()
+        await self.session.refresh(confession)
+        return confession
 
     async def set_public_message(self, confession_id: int, message_id: int) -> None:
         await self.session.execute(

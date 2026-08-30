@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from bot.database.connection import get_session
 from bot.database.repository import ConfessionRepository, ServerRepository
+from bot.utils.embeds import theme_color
 from bot.utils.permissions import can_moderate
 
 
@@ -54,7 +55,7 @@ class Logs(commands.Cog):
 
         embed = discord.Embed(
             title=f"Audit trail — Confession #{confession_id}",
-            color=discord.Color.blurple(),
+            color=theme_color(server.theme),
         )
         embed.add_field(name="Current status", value=confession.status, inline=False)
 

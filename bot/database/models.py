@@ -51,6 +51,12 @@ class Server(Base):
         nullable=True,
     )
 
+    next_reply_number: Mapped[int] = mapped_column(
+        BigInteger,
+        default=1,
+        nullable=False,
+    )
+
     theme: Mapped[str] = mapped_column(
         String(50),
         default="default",
@@ -93,6 +99,7 @@ class Confession(Base):
     # foreign key constraint, matching the informal style of the other
     # migration-added columns above.
     parent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reply_number: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class ModerationLog(Base):

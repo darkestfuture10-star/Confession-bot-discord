@@ -7,18 +7,27 @@ from bot.database.models import Server
 from bot.database.repository import ConfessionRepository, ServerRepository
 from bot.services.logging_service import send_moderation_log
 from bot.utils.embeds import moderation_confession_embed, public_confession_embed
-from bot.utils.helpers import extract_confession_id
+from bot.utils.helpers import extract_confession_id, extract_confession_id_from_footer
 from bot.utils.permissions import can_moderate
 
 
-PUBLIC_TITLE_PREFIX = "Anonymous Confession #"
 REVIEW_TITLE_PREFIX = "Confession #"
 
 
 def _confession_id_from_message(message: discord.Message | None, prefix: str) -> int | None:
+    """Used for moderation review embeds, which always title with the real ID."""
     if not message or not message.embeds:
         return None
     return extract_confession_id(message.embeds[0].title, prefix)
+
+
+def _confession_id_from_public_message(message: discord.Message | None) -> int | None:
+    """Used for public confession/reply embeds, where the title may show a
+    different per-type number (Confession vs Reply) than the real ID."""
+    if not message or not message.embeds:
+        return None
+    footer = message.embeds[0].footer
+    return extract_confession_id_from_footer(footer.text if footer else None)
 
 
 async def post_public_confession(
@@ -29,6 +38,7 @@ async def post_public_confession(
     content: str,
     parent_id: int | None = None,
     reference_message_id: int | None = None,
+    reply_number: int | None = None,
 ) -> discord.Message:
     channel = guild.get_channel(server.confession_channel_id) if server.confession_channel_id else None
     if not isinstance(channel, discord.TextChannel):
@@ -43,14 +53,12 @@ async def post_public_confession(
         )
 
     message = await channel.send(
-        embed=public_confession_embed(confession_id, content, parent_id=parent_id),
+        embed=public_confession_embed(confession_id, content, parent_id=parent_id, reply_number=reply_number, theme=server.theme),
         view=PublicConfessionView(),
         reference=reference,
         mention_author=False,
     )
 
-    # Only the newest confession keeps the quick "Submit a Confession" button;
-    # demote whichever message previously held it back down to reply-only.
     previous_message_id = server.last_confession_message_id
     if previous_message_id and previous_message_id != message.id:
         try:
@@ -103,14 +111,12 @@ class RejectModal(discord.ui.Modal, title="Reject confession"):
 
 
 class ReplyOnlyView(discord.ui.View):
-    """Persistent view attached to every public confession message."""
-
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(label="💬 Reply", style=discord.ButtonStyle.secondary, custom_id="confession:reply")
     async def reply(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        confession_id = _confession_id_from_message(interaction.message, PUBLIC_TITLE_PREFIX)
+        confession_id = _confession_id_from_public_message(interaction.message)
         if confession_id is None:
             await interaction.response.send_message("❌ Could not determine which confession this is.", ephemeral=True)
             return
@@ -118,9 +124,6 @@ class ReplyOnlyView(discord.ui.View):
 
 
 class PublicConfessionView(ReplyOnlyView):
-    """Reply + Submit a Confession. Only the newest confession message uses
-    this; older ones get demoted to ``ReplyOnlyView``."""
-
     def __init__(self):
         super().__init__()
         submit_button = discord.ui.Button(
@@ -193,12 +196,17 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
                 await interaction.response.send_message("❌ The confession you're replying to no longer exists.", ephemeral=True)
                 return
 
+        reply_number = None
+        if parent_confession is not None:
+            reply_number = await servers.allocate_reply_number(interaction.guild.id)
+
         confession = await confessions.create(
             interaction.guild.id,
             interaction.user.id,
             content,
             "pending" if server.approval_enabled else "approved",
             parent_id=parent_confession.id if parent_confession else None,
+            reply_number=reply_number,
         )
         await confessions.add_log(confession.id, "submitted", interaction.user.id)
 
@@ -210,6 +218,8 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
                     embed=moderation_confession_embed(
                         confession.id, content, interaction.user,
                         parent_id=parent_confession.id if parent_confession else None,
+                        reply_number=confession.reply_number,
+                        theme=server.theme,
                     ),
                     view=ModerationView(),
                     allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
@@ -219,10 +229,7 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
                 await confessions.add_log(confession.id, "review_delivery_failed", details=str(error))
                 await interaction.response.send_message(f"⚠️ Your confession `#{confession.id}` was saved but could not reach moderators. Please contact an administrator.", ephemeral=True)
                 return
-            await send_moderation_log(
-                interaction.guild, server,
-                f"📝 Confession #{confession.id} submitted by {interaction.user.mention} and awaiting review.",
-            )
+            await send_moderation_log(interaction.guild, server, "submitted", confession, author=interaction.user)
             await interaction.response.send_message(f"✅ Your confession was submitted anonymously as `#{confession.id}` and is awaiting review.", ephemeral=True)
         else:
             reference_message_id = parent_confession.public_message_id if parent_confession else None
@@ -231,17 +238,16 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
                     interaction.guild, servers, server, confession.id, content,
                     parent_id=parent_confession.id if parent_confession else None,
                     reference_message_id=reference_message_id,
+                    reply_number=confession.reply_number,
                 )
                 await confessions.set_public_message(confession.id, public_message.id)
+                confession.public_message_id = public_message.id
             except (discord.HTTPException, ValueError) as error:
                 await confessions.set_status(confession.id, "publication_failed")
                 await confessions.add_log(confession.id, "publication_failed", details=str(error))
                 await interaction.response.send_message(f"⚠️ Your confession `#{confession.id}` was saved but could not be posted. Please contact a moderator.", ephemeral=True)
                 return
-            await send_moderation_log(
-                interaction.guild, server,
-                f"Confession #{confession.id} by {interaction.user.mention} was posted automatically.",
-            )
+            await send_moderation_log(interaction.guild, server, "posted", confession, author=interaction.user)
             await interaction.response.send_message(f"✅ Your anonymous confession was posted as `#{confession.id}`.", ephemeral=True)
     except Exception:
         await session.rollback()
@@ -283,8 +289,10 @@ async def review_confession(interaction: discord.Interaction, confession_id: int
                     interaction.guild, servers, server, confession.id, confession.content,
                     parent_id=confession.parent_id,
                     reference_message_id=reference_message_id,
+                    reply_number=confession.reply_number,
                 )
                 await confessions.set_public_message(confession.id, public_message.id)
+                confession.public_message_id = public_message.id
             except (discord.HTTPException, ValueError) as error:
                 await confessions.set_status(confession.id, "publication_failed")
                 await confessions.add_log(confession.id, "publication_failed", interaction.user.id, str(error))
@@ -295,9 +303,17 @@ async def review_confession(interaction: discord.Interaction, confession_id: int
 
         action = "approved" if status == "approved" else "rejected"
         await confessions.add_log(confession.id, action, interaction.user.id, reason)
+
+        author = interaction.guild.get_member(confession.author_id)
+        if author is None:
+            try:
+                author = await interaction.client.fetch_user(confession.author_id)
+            except discord.HTTPException:
+                author = None
+
         await send_moderation_log(
-            interaction.guild, server,
-            f"Confession #{confession.id} by <@{confession.author_id}> was **{action}** by {interaction.user.mention}.",
+            interaction.guild, server, action, confession,
+            author=author, moderator=interaction.user, reason=reason,
         )
         await interaction.response.send_message(f"✅ Confession #{confession.id} {action}.", ephemeral=True)
         if interaction.message:
@@ -338,6 +354,8 @@ class Confession(commands.Cog):
                 "review_delivery_failed": "⚠️ Saved but could not reach moderators",
             }
             response = f"Confession `#{confession.id}`: {labels.get(confession.status, confession.status)}"
+            if confession.reply_number is not None:
+                response += f"\nShown publicly as: Anonymous Reply #{confession.reply_number}"
             if confession.status == "rejected" and confession.rejection_reason:
                 response += f"\nReason: {confession.rejection_reason}"
             await interaction.response.send_message(response, ephemeral=True)

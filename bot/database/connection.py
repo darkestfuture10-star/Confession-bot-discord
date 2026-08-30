@@ -63,6 +63,24 @@ async def initialize_database():
             )
         )
 
+        await connection.execute(
+            text(
+                """
+                ALTER TABLE servers
+                ADD COLUMN IF NOT EXISTS theme VARCHAR(50) NOT NULL DEFAULT 'default'
+                """
+            )
+        )
+
+        await connection.execute(
+            text(
+                """
+                ALTER TABLE servers
+                ADD COLUMN IF NOT EXISTS next_reply_number BIGINT NOT NULL DEFAULT 1
+                """
+            )
+        )
+
         # ``create_all`` intentionally does not alter existing PostgreSQL tables.
         # These additive migrations preserve submissions made with earlier builds.
         await connection.execute(
@@ -77,7 +95,8 @@ async def initialize_database():
                 ADD COLUMN IF NOT EXISTS reviewed_by_id BIGINT,
                 ADD COLUMN IF NOT EXISTS rejection_reason TEXT,
                 ADD COLUMN IF NOT EXISTS public_message_id BIGINT,
-                ADD COLUMN IF NOT EXISTS parent_id BIGINT
+                ADD COLUMN IF NOT EXISTS parent_id BIGINT,
+                ADD COLUMN IF NOT EXISTS reply_number BIGINT
                 """
             )
         )
@@ -108,6 +127,7 @@ async def initialize_database():
             "rejection_reason",
             "public_message_id",
             "parent_id",
+            "reply_number",
         }
 
         result = await connection.execute(

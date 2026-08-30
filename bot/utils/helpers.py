@@ -1,3 +1,6 @@
+import re
+
+
 def extract_confession_id(title: str | None, prefix: str) -> int | None:
     """Pull the numeric confession ID out of an embed title like
     'Confession #5 awaiting review' or 'Anonymous Confession #5'.
@@ -17,3 +20,13 @@ def extract_confession_id(title: str | None, prefix: str) -> int | None:
         else:
             break
     return int(digits) if digits else None
+
+
+def extract_confession_id_from_footer(footer_text: str | None) -> int | None:
+    """Public confession/reply embeds always encode the real confession ID in
+    the footer as 'Confession ID: N', independent of whatever number is shown
+    in the title (the per-type Confession/Reply counter)."""
+    if not footer_text:
+        return None
+    match = re.search(r"Confession ID:\s*(\d+)", footer_text)
+    return int(match.group(1)) if match else None
