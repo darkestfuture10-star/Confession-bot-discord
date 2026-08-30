@@ -43,6 +43,14 @@ class Server(Base):
         nullable=True,
     )
 
+    # The most recently posted public confession message in the confession
+    # channel. Tracked so only that single message keeps the quick "Submit a
+    # Confession" button once a newer confession is posted.
+    last_confession_message_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
     theme: Mapped[str] = mapped_column(
         String(50),
         default="default",
@@ -81,6 +89,10 @@ class Confession(Base):
     reviewed_by_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     public_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Set when this confession is a reply to another confession. No DB-level
+    # foreign key constraint, matching the informal style of the other
+    # migration-added columns above.
+    parent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class ModerationLog(Base):

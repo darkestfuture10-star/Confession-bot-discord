@@ -14,96 +14,64 @@ class ServerRepository:
         result = await self.session.execute(
             select(Server).where(Server.id == server_id)
         )
-
         return result.scalar_one_or_none()
 
     async def get_or_create(self, server_id: int) -> Server:
         server = await self.get(server_id)
-
         if server is None:
             server = Server(id=server_id)
             self.session.add(server)
             await self.session.flush()
-
         return server
 
-    async def set_confession_channel(
-        self,
-        server_id: int,
-        channel_id: int,
-    ) -> Server:
+    async def set_confession_channel(self, server_id: int, channel_id: int) -> Server:
         server = await self.get_or_create(server_id)
-
         server.confession_channel_id = channel_id
-
         await self.session.commit()
         await self.session.refresh(server)
-
         return server
 
-    async def set_moderator_role(
-        self,
-        server_id: int,
-        role_id: int,
-    ) -> Server:
+    async def set_moderator_role(self, server_id: int, role_id: int) -> Server:
         server = await self.get_or_create(server_id)
-
         server.moderator_role_id = role_id
-
         await self.session.commit()
         await self.session.refresh(server)
-
         return server
 
-    async def set_approval(
-            self,
-            server_id: int,
-            enabled: bool,
-    ) -> Server:
+    async def set_approval(self, server_id: int, enabled: bool) -> Server:
         server = await self.get_or_create(server_id)
-
         server.approval_enabled = enabled
-
         await self.session.commit()
         await self.session.refresh(server)
-
         return server
 
-    async def set_logging(
-            self,
-            server_id: int,
-            enabled: bool,
-    ) -> Server:
+    async def set_logging(self, server_id: int, enabled: bool) -> Server:
         server = await self.get_or_create(server_id)
-
         server.logging_enabled = enabled
-
         await self.session.commit()
         await self.session.refresh(server)
-
         return server
 
-    async def set_logging_channel(
-            self,
-            server_id: int,
-            channel_id: int,
-    ) -> Server:
+    async def set_logging_channel(self, server_id: int, channel_id: int) -> Server:
         server = await self.get_or_create(server_id)
-
         server.logging_channel_id = channel_id
-
         await self.session.commit()
         await self.session.refresh(server)
-
         return server
+
+    async def set_last_confession_message(self, server_id: int, message_id: int | None) -> None:
+        await self.session.execute(
+            update(Server).where(Server.id == server_id).values(last_confession_message_id=message_id)
+        )
+        await self.session.commit()
 
 
 class ConfessionRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create(self, server_id: int, author_id: int, content: str, status: str) -> Confession:
-        confession = Confession(server_id=server_id, author_id=author_id, content=content, status=status)
+    async def create(self, server_id: int, author_id: int, content: str, status: str, parent_id: int | None = None) -> Confession:
+        confession = Confession(server_id=server_id, author_id=author_id, content=content, status=status, parent_id=parent_id)
         self.session.add(confession)
         await self.session.flush()
         await self.session.commit()

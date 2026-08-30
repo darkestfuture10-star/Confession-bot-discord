@@ -10,7 +10,7 @@ from bot.database.connection import (
     initialize_database,
     test_database_connection,
 )
-from bot.cogs.confession import ModerationView
+from bot.cogs.confession import ModerationView, PublicConfessionView, ReplyOnlyView
 from bot.errors.handlers import handle_app_command_error
 from bot.utils.logger import get_logger, setup_logging
 
@@ -64,6 +64,8 @@ class ConfessionBot(commands.Bot):
         # Approve/Reject buttons on review messages must be re-registered on every
         # restart, or clicks on messages sent before the restart silently fail.
         self.add_view(ModerationView())
+        self.add_view(ReplyOnlyView())
+        self.add_view(PublicConfessionView())
 
         # Cogs
 
