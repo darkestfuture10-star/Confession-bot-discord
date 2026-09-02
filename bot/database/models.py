@@ -115,3 +115,42 @@ class ModerationLog(Base):
     action: Mapped[str] = mapped_column(String(30), nullable=False)
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class UserRestriction(Base):
+    """A block on a user submitting confessions, temporary or permanent."""
+
+    __tablename__ = "user_restrictions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    server_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("servers.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    moderator_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    # None = permanent restriction.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    lifted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    lifted_by_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class ConfessionReport(Base):
+    """A user report against a public confession or reply."""
+
+    __tablename__ = "confession_reports"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    confession_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("confessions.id", ondelete="CASCADE"), index=True
+    )
+    server_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    reporter_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_by_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String(30), nullable=True)

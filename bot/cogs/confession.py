@@ -1,17 +1,20 @@
+from datetime import timezone
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from bot.database.connection import get_session
 from bot.database.models import Server
-from bot.database.repository import ConfessionRepository, ServerRepository
-from bot.services.logging_service import send_moderation_log
+from bot.database.repository import ConfessionRepository, ReportRepository, RestrictionRepository, ServerRepository
+from bot.services.logging_service import send_event_log, send_moderation_log
 from bot.utils.embeds import moderation_confession_embed, public_confession_embed
 from bot.utils.helpers import extract_confession_id, extract_confession_id_from_footer
 from bot.utils.permissions import can_moderate
 
 
 REVIEW_TITLE_PREFIX = "Confession #"
+REPORT_FLAG_THRESHOLD = 3
 
 
 def _confession_id_from_message(message: discord.Message | None, prefix: str) -> int | None:
@@ -110,11 +113,40 @@ class RejectModal(discord.ui.Modal, title="Reject confession"):
         await review_confession(interaction, self.confession_id, "rejected", str(self.reason) or None)
 
 
+class DeleteModal(discord.ui.Modal, title="Delete confession"):
+    reason = discord.ui.TextInput(label="Reason", required=True, max_length=500, style=discord.TextStyle.paragraph)
+
+    def __init__(self, confession_id: int):
+        super().__init__()
+        self.confession_id = confession_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await delete_confession(interaction, self.confession_id, str(self.reason))
+
+
+class ReportModal(discord.ui.Modal, title="Report this confession"):
+    reason = discord.ui.TextInput(
+        label="Why are you reporting this? (optional)",
+        required=False,
+        max_length=500,
+        style=discord.TextStyle.paragraph,
+    )
+
+    def __init__(self, confession_id: int):
+        super().__init__()
+        self.confession_id = confession_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await report_confession(interaction, self.confession_id, str(self.reason) or None)
+
+
 class ReplyOnlyView(discord.ui.View):
+    """Persistent view attached to every public confession message."""
+
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="💬 Reply", style=discord.ButtonStyle.secondary, custom_id="confession:reply")
+    @discord.ui.button(label="💬 Reply", style=discord.ButtonStyle.secondary, custom_id="confession:reply", row=0)
     async def reply(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         confession_id = _confession_id_from_public_message(interaction.message)
         if confession_id is None:
@@ -122,14 +154,34 @@ class ReplyOnlyView(discord.ui.View):
             return
         await interaction.response.send_modal(ReplyModal(confession_id))
 
+    @discord.ui.button(label="🚩 Report", style=discord.ButtonStyle.secondary, custom_id="confession:report", row=0)
+    async def report(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        confession_id = _confession_id_from_public_message(interaction.message)
+        if confession_id is None:
+            await interaction.response.send_message("❌ Could not determine which confession this is.", ephemeral=True)
+            return
+        await interaction.response.send_modal(ReportModal(confession_id))
+
+    @discord.ui.button(label="🗑️ Delete", style=discord.ButtonStyle.danger, custom_id="confession:delete", row=0)
+    async def delete(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        confession_id = _confession_id_from_public_message(interaction.message)
+        if confession_id is None:
+            await interaction.response.send_message("❌ Could not determine which confession this is.", ephemeral=True)
+            return
+        await interaction.response.send_modal(DeleteModal(confession_id))
+
 
 class PublicConfessionView(ReplyOnlyView):
+    """Reply + Report + Delete + Submit a Confession. Only the newest
+    confession message uses this; older ones get demoted to ``ReplyOnlyView``."""
+
     def __init__(self):
         super().__init__()
         submit_button = discord.ui.Button(
             label="📝 Submit a Confession",
             style=discord.ButtonStyle.primary,
             custom_id="confession:submit",
+            row=1,
         )
         submit_button.callback = self.submit
         self.add_item(submit_button)
@@ -171,6 +223,18 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
 
     session = get_session()
     try:
+        restriction = await RestrictionRepository(session).get_active(interaction.guild.id, interaction.user.id)
+        if restriction is not None:
+            if restriction.expires_at:
+                expiry = discord.utils.format_dt(restriction.expires_at.replace(tzinfo=timezone.utc), style="R")
+                detail = f"Your confession access is restricted until {expiry}."
+            else:
+                detail = "Your confession access has been permanently restricted."
+            if restriction.reason:
+                detail += f"\nReason: {restriction.reason}"
+            await interaction.response.send_message(f"❌ {detail}", ephemeral=True)
+            return
+
         servers = ServerRepository(session)
         server = await servers.get(interaction.guild.id)
         if server is None or not server.confession_channel_id:
@@ -325,6 +389,112 @@ async def review_confession(interaction: discord.Interaction, confession_id: int
         await session.close()
 
 
+async def delete_confession(interaction: discord.Interaction, confession_id: int, reason: str) -> None:
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("❌ Moderation is only available in a server.", ephemeral=True)
+        return
+
+    session = get_session()
+    try:
+        servers = ServerRepository(session)
+        server = await servers.get(interaction.guild.id)
+        if server is None or not can_moderate(interaction.user, server.moderator_role_id):
+            await interaction.response.send_message("❌ You do not have permission to delete confessions.", ephemeral=True)
+            return
+
+        confessions = ConfessionRepository(session)
+        confession = await confessions.get(confession_id, interaction.guild.id)
+        if confession is None:
+            await interaction.response.send_message("❌ This confession no longer exists.", ephemeral=True)
+            return
+        if confession.status != "approved":
+            await interaction.response.send_message(f"❌ Only posted confessions can be deleted (current status: {confession.status}).", ephemeral=True)
+            return
+
+        if confession.public_message_id and server.confession_channel_id:
+            channel = interaction.guild.get_channel(server.confession_channel_id)
+            if isinstance(channel, discord.TextChannel):
+                try:
+                    await channel.get_partial_message(confession.public_message_id).delete()
+                except discord.HTTPException:
+                    pass
+
+        await confessions.set_status(confession_id, "deleted")
+        confession.status = "deleted"
+        await confessions.add_log(confession_id, "deleted", interaction.user.id, reason)
+
+        reports = ReportRepository(session)
+        await reports.resolve_for_confession(confession_id, interaction.user.id, "deleted")
+
+        author = interaction.guild.get_member(confession.author_id)
+        if author is None:
+            try:
+                author = await interaction.client.fetch_user(confession.author_id)
+            except discord.HTTPException:
+                author = None
+
+        await send_moderation_log(
+            interaction.guild, server, "deleted", confession,
+            author=author, moderator=interaction.user, reason=reason,
+        )
+        await interaction.response.send_message(f"✅ Confession #{confession_id} deleted.", ephemeral=True)
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
+
+
+async def report_confession(interaction: discord.Interaction, confession_id: int, reason: str | None) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Reports can only be submitted in a server.", ephemeral=True)
+        return
+
+    session = get_session()
+    try:
+        servers = ServerRepository(session)
+        server = await servers.get(interaction.guild.id)
+        if server is None:
+            await interaction.response.send_message("❌ This server hasn't been configured yet.", ephemeral=True)
+            return
+
+        confessions = ConfessionRepository(session)
+        confession = await confessions.get(confession_id, interaction.guild.id)
+        if confession is None or confession.status != "approved":
+            await interaction.response.send_message("❌ This confession can't be reported.", ephemeral=True)
+            return
+
+        reports = ReportRepository(session)
+        if await reports.has_reported(confession_id, interaction.user.id):
+            await interaction.response.send_message("ℹ️ You've already reported this confession.", ephemeral=True)
+            return
+
+        await reports.create(confession_id, interaction.guild.id, interaction.user.id, reason)
+        await confessions.add_log(confession_id, "reported", interaction.user.id, reason)
+
+        unresolved = await reports.count_unresolved(confession_id)
+        await interaction.response.send_message("✅ Thanks, this confession has been reported to the moderators.", ephemeral=True)
+
+        if unresolved >= REPORT_FLAG_THRESHOLD:
+            url = None
+            if confession.public_message_id and server.confession_channel_id:
+                url = f"https://discord.com/channels/{interaction.guild.id}/{server.confession_channel_id}/{confession.public_message_id}"
+            description = f"Confession #{confession.id} has received **{unresolved}** reports and needs review."
+            if url:
+                description += f"\n[Jump to confession]({url})"
+            await send_event_log(
+                interaction.guild, server,
+                "🚩 Confession Flagged for Review",
+                description=description,
+                footer=f"Confession #{confession.id}",
+            )
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
+
+
 class Confession(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -352,6 +522,7 @@ class Confession(commands.Cog):
                 "rejected": "❌ Rejected",
                 "publication_failed": "⚠️ Approved but could not be posted",
                 "review_delivery_failed": "⚠️ Saved but could not reach moderators",
+                "deleted": "🗑️ Removed by a moderator",
             }
             response = f"Confession `#{confession.id}`: {labels.get(confession.status, confession.status)}"
             if confession.reply_number is not None:

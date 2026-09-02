@@ -1,4 +1,5 @@
 import re
+from datetime import timedelta
 
 
 def extract_confession_id(title: str | None, prefix: str) -> int | None:
@@ -30,3 +31,15 @@ def extract_confession_id_from_footer(footer_text: str | None) -> int | None:
         return None
     match = re.search(r"Confession ID:\s*(\d+)", footer_text)
     return int(match.group(1)) if match else None
+
+
+_DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+
+
+def parse_duration(value: str) -> timedelta:
+    """Parse a short duration string like '10m', '2h', '3d', or '1w'."""
+    match = re.fullmatch(r"\s*(\d+)\s*([mhdw])\s*", value.lower())
+    if not match:
+        raise ValueError("Duration must look like 10m, 2h, 3d, or 1w.")
+    amount, unit = match.groups()
+    return timedelta(**{_DURATION_UNITS[unit]: int(amount)})

@@ -1,9 +1,9 @@
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.database.models import Confession, ModerationLog, Server
+from bot.database.models import Confession, ConfessionReport, ModerationLog, Server, UserRestriction
 
 
 class ServerRepository:
@@ -89,6 +89,14 @@ class ConfessionRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    async def create(self, server_id: int, author_id: int, content: str, status: str, parent_id: int | None = None, reply_number: int | None = None) -> Confession:
+        confession = Confession(server_id=server_id, author_id=author_id, content=content, status=status, parent_id=parent_id, reply_number=reply_number)
+        self.session.add(confession)
+        await self.session.flush()
+        await self.session.commit()
+        await self.session.refresh(confession)
+        return confession
+
     async def get(self, confession_id: int, server_id: int) -> Confession | None:
         result = await self.session.execute(
             select(Confession).where(Confession.id == confession_id, Confession.server_id == server_id)
@@ -114,14 +122,6 @@ class ConfessionRepository:
         )
         await self.session.commit()
         return result.rowcount == 1
-
-    async def create(self, server_id: int, author_id: int, content: str, status: str, parent_id: int | None = None, reply_number: int | None = None) -> Confession:
-        confession = Confession(server_id=server_id, author_id=author_id, content=content, status=status, parent_id=parent_id, reply_number=reply_number)
-        self.session.add(confession)
-        await self.session.flush()
-        await self.session.commit()
-        await self.session.refresh(confession)
-        return confession
 
     async def set_public_message(self, confession_id: int, message_id: int) -> None:
         await self.session.execute(
@@ -157,3 +157,133 @@ class ConfessionRepository:
             .order_by(ModerationLog.created_at.asc())
         )
         return list(result.scalars().all())
+
+    async def count_by_status(self, server_id: int) -> dict[str, int]:
+        result = await self.session.execute(
+            select(Confession.status, func.count())
+            .where(Confession.server_id == server_id)
+            .group_by(Confession.status)
+        )
+        return {status: count for status, count in result.all()}
+
+
+class RestrictionRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, server_id: int, user_id: int, moderator_id: int, reason: str | None, expires_at: datetime | None) -> UserRestriction:
+        # Replace any existing active restriction rather than stacking them.
+        await self.lift(server_id, user_id, moderator_id)
+        restriction = UserRestriction(
+            server_id=server_id, user_id=user_id, moderator_id=moderator_id,
+            reason=reason, expires_at=expires_at,
+        )
+        self.session.add(restriction)
+        await self.session.commit()
+        await self.session.refresh(restriction)
+        return restriction
+
+    async def get_active(self, server_id: int, user_id: int) -> UserRestriction | None:
+        result = await self.session.execute(
+            select(UserRestriction)
+            .where(
+                UserRestriction.server_id == server_id,
+                UserRestriction.user_id == user_id,
+                UserRestriction.active == True,  # noqa: E712
+                or_(UserRestriction.expires_at.is_(None), UserRestriction.expires_at > datetime.utcnow()),
+            )
+            .order_by(UserRestriction.created_at.desc())
+        )
+        return result.scalars().first()
+
+    async def lift(self, server_id: int, user_id: int, moderator_id: int) -> bool:
+        result = await self.session.execute(
+            update(UserRestriction)
+            .where(
+                UserRestriction.server_id == server_id,
+                UserRestriction.user_id == user_id,
+                UserRestriction.active == True,  # noqa: E712
+            )
+            .values(active=False, lifted_at=datetime.utcnow(), lifted_by_id=moderator_id)
+        )
+        await self.session.commit()
+        return result.rowcount > 0
+
+    async def list_active(self, server_id: int, limit: int = 25) -> list[UserRestriction]:
+        result = await self.session.execute(
+            select(UserRestriction)
+            .where(
+                UserRestriction.server_id == server_id,
+                UserRestriction.active == True,  # noqa: E712
+                or_(UserRestriction.expires_at.is_(None), UserRestriction.expires_at > datetime.utcnow()),
+            )
+            .order_by(UserRestriction.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def count_active(self, server_id: int) -> int:
+        result = await self.session.execute(
+            select(func.count()).select_from(UserRestriction).where(
+                UserRestriction.server_id == server_id,
+                UserRestriction.active == True,  # noqa: E712
+                or_(UserRestriction.expires_at.is_(None), UserRestriction.expires_at > datetime.utcnow()),
+            )
+        )
+        return result.scalar_one()
+
+
+class ReportRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def has_reported(self, confession_id: int, reporter_id: int) -> bool:
+        result = await self.session.execute(
+            select(ConfessionReport.id).where(
+                ConfessionReport.confession_id == confession_id,
+                ConfessionReport.reporter_id == reporter_id,
+            )
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def create(self, confession_id: int, server_id: int, reporter_id: int, reason: str | None) -> ConfessionReport:
+        report = ConfessionReport(confession_id=confession_id, server_id=server_id, reporter_id=reporter_id, reason=reason)
+        self.session.add(report)
+        await self.session.commit()
+        await self.session.refresh(report)
+        return report
+
+    async def count_unresolved(self, confession_id: int) -> int:
+        result = await self.session.execute(
+            select(func.count()).select_from(ConfessionReport).where(
+                ConfessionReport.confession_id == confession_id,
+                ConfessionReport.resolved == False,  # noqa: E712
+            )
+        )
+        return result.scalar_one()
+
+    async def count_open(self, server_id: int) -> int:
+        result = await self.session.execute(
+            select(func.count()).select_from(ConfessionReport).where(
+                ConfessionReport.server_id == server_id,
+                ConfessionReport.resolved == False,  # noqa: E712
+            )
+        )
+        return result.scalar_one()
+
+    async def list_open(self, server_id: int, limit: int = 25) -> list[ConfessionReport]:
+        result = await self.session.execute(
+            select(ConfessionReport)
+            .where(ConfessionReport.server_id == server_id, ConfessionReport.resolved == False)  # noqa: E712
+            .order_by(ConfessionReport.created_at.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def resolve_for_confession(self, confession_id: int, moderator_id: int, resolution: str) -> None:
+        await self.session.execute(
+            update(ConfessionReport)
+            .where(ConfessionReport.confession_id == confession_id, ConfessionReport.resolved == False)  # noqa: E712
+            .values(resolved=True, resolved_at=datetime.utcnow(), resolved_by_id=moderator_id, resolution=resolution)
+        )
+        await self.session.commit()

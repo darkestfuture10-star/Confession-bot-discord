@@ -11,6 +11,7 @@ ACTION_TITLES = {
     "posted": "📬 Confession Posted",
     "approved": "✅ Confession Approved",
     "rejected": "❌ Confession Rejected",
+    "deleted": "🗑️ Confession Deleted",
 }
 
 
@@ -26,9 +27,9 @@ def _build_log_embed(
     embed = discord.Embed(title=ACTION_TITLES.get(action, action.title()), color=theme_color(server.theme))
 
     if author is not None:
-        submitter_value = f"||{author} (`{author.id}`)||"
+        submitter_value = f"||{author.mention} (`{author.id}`)||"
     else:
-        submitter_value = f"||Unknown user (`{confession.author_id}`)||"
+        submitter_value = f"||<@{confession.author_id}> (`{confession.author_id}`)||"
     embed.add_field(name="Submitted by", value=submitter_value, inline=False)
 
     content = confession.content if len(confession.content) <= 1024 else confession.content[:1021] + "..."
@@ -49,7 +50,8 @@ def _build_log_embed(
     embed.set_footer(text=f"Confession #{confession.id}")
 
     view = None
-    if confession.public_message_id and server.confession_channel_id:
+    # No point linking to a message that's just been deleted.
+    if action != "deleted" and confession.public_message_id and server.confession_channel_id:
         url = f"https://discord.com/channels/{guild.id}/{server.confession_channel_id}/{confession.public_message_id}"
         view = discord.ui.View(timeout=None)
         view.add_item(discord.ui.Button(label="View Confession", style=discord.ButtonStyle.link, url=url))
@@ -67,7 +69,7 @@ async def send_moderation_log(
     moderator: discord.abc.User | None = None,
     reason: str | None = None,
 ) -> None:
-    """Best-effort audit-channel output; database logging remains authoritative."""
+    """Best-effort audit-channel output for a specific confession's lifecycle event."""
     if not server.logging_enabled or not server.logging_channel_id:
         return
     channel = guild.get_channel(server.logging_channel_id)
@@ -80,5 +82,34 @@ async def send_moderation_log(
             await channel.send(embed=embed, view=view)
         else:
             await channel.send(embed=embed)
+    except discord.HTTPException:
+        pass
+
+
+async def send_event_log(
+    guild: discord.Guild,
+    server: Server,
+    title: str,
+    *,
+    description: str | None = None,
+    fields: list[tuple[str, str]] | None = None,
+    footer: str | None = None,
+) -> None:
+    """Best-effort audit-channel output for events not tied to a single
+    confession (e.g. user restrictions, report escalations)."""
+    if not server.logging_enabled or not server.logging_channel_id:
+        return
+    channel = guild.get_channel(server.logging_channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    embed = discord.Embed(title=title, description=description, color=theme_color(server.theme))
+    for name, value in (fields or []):
+        embed.add_field(name=name, value=value, inline=False)
+    if footer:
+        embed.set_footer(text=footer)
+
+    try:
+        await channel.send(embed=embed)
     except discord.HTTPException:
         pass
