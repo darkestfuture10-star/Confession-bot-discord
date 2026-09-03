@@ -41,8 +41,156 @@ async def build_dashboard_embed(server, session) -> discord.Embed:
     embed.add_field(name="❌ Rejected", value=str(counts.get("rejected", 0)), inline=True)
     embed.add_field(name="🗑️ Deleted", value=str(counts.get("deleted", 0)), inline=True)
     embed.add_field(name="🔨 Active Restrictions", value=str(active_restrictions), inline=True)
-    embed.set_footer(text="Use the buttons below for quick actions.")
+    embed.set_footer(text="Use the buttons below for quick actions. Row 2: Restrict, Unrestrict, Delete.")
     return embed
+
+
+class RestrictUserModal(discord.ui.Modal, title="Restrict User"):
+    user_id = discord.ui.TextInput(
+        label="User ID",
+        placeholder="Enter the user's ID to restrict",
+        style=discord.TextStyle.short,
+        required=True,
+    )
+    duration = discord.ui.TextInput(
+        label="Duration (optional)",
+        placeholder="e.g. 10m, 2h, 3d, 1w — leave empty for permanent",
+        style=discord.TextStyle.short,
+        required=False,
+    )
+    reason = discord.ui.TextInput(
+        label="Reason (optional)",
+        placeholder="Why is this user being restricted?",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
+            return
+
+        try:
+            target_user_id = int(self.user_id.value.strip())
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid user ID. Please enter a valid numeric ID.", ephemeral=True)
+            return
+
+        expires_at = None
+        if self.duration.value.strip():
+            try:
+                from bot.utils.helpers import parse_duration
+                from datetime import datetime, timezone
+                expires_at = datetime.utcnow() + parse_duration(self.duration.value.strip())
+            except ValueError as error:
+                await interaction.response.send_message(f"❌ {error}", ephemeral=True)
+                return
+
+        session = get_session()
+        try:
+            servers = ServerRepository(session)
+            server = await servers.get(interaction.guild.id)
+            if server is None or not can_moderate(interaction.user, server.moderator_role_id):
+                await interaction.response.send_message("❌ You do not have permission to restrict users.", ephemeral=True)
+                return
+
+            from bot.database.repository import RestrictionRepository
+            await RestrictionRepository(session).create(interaction.guild.id, target_user_id, interaction.user.id, self.reason.value.strip() or None, expires_at)
+        finally:
+            await session.close()
+
+        target_user = interaction.guild.get_member(target_user_id)
+        user_mention = target_user.mention if target_user else f"<@{target_user_id}>"
+        duration_text = f"until {discord.utils.format_dt(expires_at.replace(tzinfo=timezone.utc), style='f')}" if expires_at else "permanently"
+        
+        from bot.services.logging_service import send_event_log
+        fields = [("Reason", self.reason.value)] if self.reason.value else None
+        await send_event_log(
+            interaction.guild, server, "🔨 User Restricted",
+            description=f"{user_mention} was restricted {duration_text} by {interaction.user.mention}.",
+            fields=fields,
+        )
+        await interaction.response.send_message(f"✅ {user_mention} is restricted {duration_text}.", ephemeral=True)
+
+
+class UnrestrictUserModal(discord.ui.Modal, title="Unrestrict User"):
+    user_id = discord.ui.TextInput(
+        label="User ID",
+        placeholder="Enter the user's ID to unrestrict",
+        style=discord.TextStyle.short,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
+            return
+
+        try:
+            target_user_id = int(self.user_id.value.strip())
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid user ID. Please enter a valid numeric ID.", ephemeral=True)
+            return
+
+        session = get_session()
+        try:
+            servers = ServerRepository(session)
+            server = await servers.get(interaction.guild.id)
+            if server is None or not can_moderate(interaction.user, server.moderator_role_id):
+                await interaction.response.send_message("❌ You do not have permission to unrestrict users.", ephemeral=True)
+                return
+
+            from bot.database.repository import RestrictionRepository
+            lifted = await RestrictionRepository(session).lift(interaction.guild.id, target_user_id, interaction.user.id)
+        finally:
+            await session.close()
+
+        if not lifted:
+            target_user = interaction.guild.get_member(target_user_id)
+            user_mention = target_user.mention if target_user else f"<@{target_user_id}>"
+            await interaction.response.send_message(f"ℹ️ {user_mention} doesn't have an active restriction.", ephemeral=True)
+            return
+
+        target_user = interaction.guild.get_member(target_user_id)
+        user_mention = target_user.mention if target_user else f"<@{target_user_id}>"
+        
+        from bot.services.logging_service import send_event_log
+        await send_event_log(
+            interaction.guild, server, "🔓 Restriction Lifted",
+            description=f"{user_mention}'s restriction was lifted by {interaction.user.mention}.",
+        )
+        await interaction.response.send_message(f"✅ {user_mention}'s restriction has been lifted.", ephemeral=True)
+
+
+class DeleteConfessionModal(discord.ui.Modal, title="Delete Confession"):
+    confession_id = discord.ui.TextInput(
+        label="Confession ID",
+        placeholder="Enter the confession ID to delete",
+        style=discord.TextStyle.short,
+        required=True,
+    )
+    reason = discord.ui.TextInput(
+        label="Reason",
+        placeholder="Why is this confession being deleted?",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
+            return
+
+        try:
+            cid = int(self.confession_id.value.strip())
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid confession ID. Please enter a valid numeric ID.", ephemeral=True)
+            return
+
+        from bot.cogs.confession import delete_confession
+        await delete_confession(interaction, cid, self.reason.value.strip())
 
 
 class DashboardView(discord.ui.View):
@@ -83,6 +231,54 @@ class DashboardView(discord.ui.View):
         finally:
             await session.close()
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="🔨 Restrict User", style=discord.ButtonStyle.danger, row=1)
+    async def restrict_user(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
+            return
+        session = get_session()
+        try:
+            servers = ServerRepository(session)
+            server = await servers.get(interaction.guild.id)
+            if server is None or not can_moderate(interaction.user, server.moderator_role_id):
+                await interaction.response.send_message("❌ You do not have permission to restrict users.", ephemeral=True)
+                return
+        finally:
+            await session.close()
+        await interaction.response.send_modal(RestrictUserModal())
+
+    @discord.ui.button(label="🔓 Unrestrict User", style=discord.ButtonStyle.success, row=1)
+    async def unrestrict_user(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
+            return
+        session = get_session()
+        try:
+            servers = ServerRepository(session)
+            server = await servers.get(interaction.guild.id)
+            if server is None or not can_moderate(interaction.user, server.moderator_role_id):
+                await interaction.response.send_message("❌ You do not have permission to unrestrict users.", ephemeral=True)
+                return
+        finally:
+            await session.close()
+        await interaction.response.send_modal(UnrestrictUserModal())
+
+    @discord.ui.button(label="🗑️ Delete Confession", style=discord.ButtonStyle.danger, row=1)
+    async def delete_confession(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
+            return
+        session = get_session()
+        try:
+            servers = ServerRepository(session)
+            server = await servers.get(interaction.guild.id)
+            if server is None or not can_moderate(interaction.user, server.moderator_role_id):
+                await interaction.response.send_message("❌ You do not have permission to delete confessions.", ephemeral=True)
+                return
+        finally:
+            await session.close()
+        await interaction.response.send_modal(DeleteConfessionModal())
 
 
 class Moderation(commands.Cog):
