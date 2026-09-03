@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.database.models import Confession, ConfessionReport, ModerationLog, Server, UserRestriction
+from bot.database.models import Confession, ModerationLog, Server, UserRestriction
 
 
 class ServerRepository:
@@ -231,59 +231,3 @@ class RestrictionRepository:
             )
         )
         return result.scalar_one()
-
-
-class ReportRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
-    async def has_reported(self, confession_id: int, reporter_id: int) -> bool:
-        result = await self.session.execute(
-            select(ConfessionReport.id).where(
-                ConfessionReport.confession_id == confession_id,
-                ConfessionReport.reporter_id == reporter_id,
-            )
-        )
-        return result.scalar_one_or_none() is not None
-
-    async def create(self, confession_id: int, server_id: int, reporter_id: int, reason: str | None) -> ConfessionReport:
-        report = ConfessionReport(confession_id=confession_id, server_id=server_id, reporter_id=reporter_id, reason=reason)
-        self.session.add(report)
-        await self.session.commit()
-        await self.session.refresh(report)
-        return report
-
-    async def count_unresolved(self, confession_id: int) -> int:
-        result = await self.session.execute(
-            select(func.count()).select_from(ConfessionReport).where(
-                ConfessionReport.confession_id == confession_id,
-                ConfessionReport.resolved == False,  # noqa: E712
-            )
-        )
-        return result.scalar_one()
-
-    async def count_open(self, server_id: int) -> int:
-        result = await self.session.execute(
-            select(func.count()).select_from(ConfessionReport).where(
-                ConfessionReport.server_id == server_id,
-                ConfessionReport.resolved == False,  # noqa: E712
-            )
-        )
-        return result.scalar_one()
-
-    async def list_open(self, server_id: int, limit: int = 25) -> list[ConfessionReport]:
-        result = await self.session.execute(
-            select(ConfessionReport)
-            .where(ConfessionReport.server_id == server_id, ConfessionReport.resolved == False)  # noqa: E712
-            .order_by(ConfessionReport.created_at.asc())
-            .limit(limit)
-        )
-        return list(result.scalars().all())
-
-    async def resolve_for_confession(self, confession_id: int, moderator_id: int, resolution: str) -> None:
-        await self.session.execute(
-            update(ConfessionReport)
-            .where(ConfessionReport.confession_id == confession_id, ConfessionReport.resolved == False)  # noqa: E712
-            .values(resolved=True, resolved_at=datetime.utcnow(), resolved_by_id=moderator_id, resolution=resolution)
-        )
-        await self.session.commit()

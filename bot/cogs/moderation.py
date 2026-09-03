@@ -5,7 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.database.connection import get_session
-from bot.database.repository import ConfessionRepository, ReportRepository, RestrictionRepository, ServerRepository
+from bot.database.repository import ConfessionRepository, RestrictionRepository, ServerRepository
 from bot.services.logging_service import send_event_log
 from bot.utils.embeds import theme_color
 from bot.utils.helpers import parse_duration
@@ -28,29 +28,11 @@ async def build_queue_embed(server, pending) -> discord.Embed:
     return embed
 
 
-async def build_reports_embed(server, reports) -> discord.Embed:
-    embed = discord.Embed(title="Open confession reports", color=theme_color(server.theme))
-    if not reports:
-        embed.description = "No open reports. 🎉"
-        return embed
-    for report in reports:
-        reason = report.reason or "No reason given"
-        reported_at = discord.utils.format_dt(report.created_at.replace(tzinfo=timezone.utc), style="R")
-        embed.add_field(
-            name=f"Confession #{report.confession_id}",
-            value=f"Reported by <@{report.reporter_id}> {reported_at}\nReason: {reason}",
-            inline=False,
-        )
-    return embed
-
-
 async def build_dashboard_embed(server, session) -> discord.Embed:
     confessions = ConfessionRepository(session)
     restrictions = RestrictionRepository(session)
-    reports = ReportRepository(session)
 
     counts = await confessions.count_by_status(server.id)
-    open_reports = await reports.count_open(server.id)
     active_restrictions = await restrictions.count_active(server.id)
 
     embed = discord.Embed(title="🛡️ Moderator Dashboard", color=theme_color(server.theme))
@@ -58,7 +40,6 @@ async def build_dashboard_embed(server, session) -> discord.Embed:
     embed.add_field(name="✅ Approved", value=str(counts.get("approved", 0)), inline=True)
     embed.add_field(name="❌ Rejected", value=str(counts.get("rejected", 0)), inline=True)
     embed.add_field(name="🗑️ Deleted", value=str(counts.get("deleted", 0)), inline=True)
-    embed.add_field(name="🚩 Open Reports", value=str(open_reports), inline=True)
     embed.add_field(name="🔨 Active Restrictions", value=str(active_restrictions), inline=True)
     embed.set_footer(text="Use the buttons below for quick actions.")
     return embed
@@ -103,24 +84,6 @@ class DashboardView(discord.ui.View):
             await session.close()
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="🚩 Reports", style=discord.ButtonStyle.primary)
-    async def reports(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
-            return
-        session = get_session()
-        try:
-            servers = ServerRepository(session)
-            server = await servers.get(interaction.guild.id)
-            if server is None or not can_moderate(interaction.user, server.moderator_role_id):
-                await interaction.response.send_message("❌ You do not have permission to view reports.", ephemeral=True)
-                return
-            open_reports = await ReportRepository(session).list_open(interaction.guild.id)
-            embed = await build_reports_embed(server, open_reports)
-        finally:
-            await session.close()
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 class Moderation(commands.Cog):
     """Moderator tools that sit alongside the per-message Approve/Reject buttons."""
@@ -129,6 +92,7 @@ class Moderation(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="moderator-dashboard", description="View confession moderation stats (moderators only).")
+    @app_commands.default_permissions(manage_messages=True)
     async def moderator_dashboard(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
@@ -146,6 +110,7 @@ class Moderation(commands.Cog):
         await interaction.response.send_message(embed=embed, view=DashboardView(), ephemeral=True)
 
     @app_commands.command(name="confession-queue", description="List confessions awaiting review (moderators only).")
+    @app_commands.default_permissions(manage_messages=True)
     async def confession_queue(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
@@ -173,31 +138,15 @@ class Moderation(commands.Cog):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="confession-reports", description="List open confession reports (moderators only).")
-    async def confession_reports(self, interaction: discord.Interaction) -> None:
-        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
-            return
-        session = get_session()
-        try:
-            servers = ServerRepository(session)
-            server = await servers.get(interaction.guild.id)
-            if server is None or not can_moderate(interaction.user, server.moderator_role_id):
-                await interaction.response.send_message("❌ You do not have permission to view reports.", ephemeral=True)
-                return
-            open_reports = await ReportRepository(session).list_open(interaction.guild.id)
-            embed = await build_reports_embed(server, open_reports)
-        finally:
-            await session.close()
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
     @app_commands.command(name="confession-delete", description="Delete a posted confession (moderators only).")
+    @app_commands.default_permissions(manage_messages=True)
     @app_commands.describe(confession_id="The confession ID to delete", reason="Why this confession is being deleted")
     async def confession_delete(self, interaction: discord.Interaction, confession_id: int, reason: str) -> None:
         from bot.cogs.confession import delete_confession
         await delete_confession(interaction, confession_id, reason)
 
     @app_commands.command(name="restrict-user", description="Block a user from submitting confessions (moderators only).")
+    @app_commands.default_permissions(manage_messages=True)
     @app_commands.describe(
         user="The user to restrict",
         duration="e.g. 10m, 2h, 3d, 1w — leave empty for a permanent restriction",
@@ -237,6 +186,7 @@ class Moderation(commands.Cog):
         await interaction.response.send_message(f"✅ {user.mention} is restricted {duration_text}.", ephemeral=True)
 
     @app_commands.command(name="unrestrict-user", description="Lift a user's confession restriction (moderators only).")
+    @app_commands.default_permissions(manage_messages=True)
     @app_commands.describe(user="The user to unrestrict")
     async def unrestrict_user(self, interaction: discord.Interaction, user: discord.Member) -> None:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
@@ -265,6 +215,7 @@ class Moderation(commands.Cog):
         await interaction.response.send_message(f"✅ {user.mention}'s restriction has been lifted.", ephemeral=True)
 
     @app_commands.command(name="restrictions", description="List currently restricted users (moderators only).")
+    @app_commands.default_permissions(manage_messages=True)
     async def restrictions(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)

@@ -6,13 +6,20 @@ from bot.database.models import Confession, Server
 from bot.utils.embeds import theme_color
 
 
-ACTION_TITLES = {
-    "submitted": "📝 New Confession Submitted",
-    "posted": "📬 Confession Posted",
-    "approved": "✅ Confession Approved",
-    "rejected": "❌ Confession Rejected",
-    "deleted": "🗑️ Confession Deleted",
+ACTION_TEMPLATES = {
+    "submitted": ("📝", "New {noun} Submitted"),
+    "posted": ("📬", "{noun} Posted"),
+    "approved": ("✅", "{noun} Approved"),
+    "rejected": ("❌", "{noun} Rejected"),
+    "deleted": ("🗑️", "{noun} Deleted"),
 }
+
+
+def _title_for(action: str, confession: Confession) -> str:
+    noun = "Reply" if confession.parent_id else "Confession"
+    emoji, template = ACTION_TEMPLATES.get(action, ("", "{noun} " + action.title()))
+    text = template.format(noun=noun)
+    return f"{emoji} {text}" if emoji else text
 
 
 def _build_log_embed(
@@ -24,7 +31,7 @@ def _build_log_embed(
     moderator: discord.abc.User | None,
     reason: str | None,
 ) -> tuple[discord.Embed, discord.ui.View | None]:
-    embed = discord.Embed(title=ACTION_TITLES.get(action, action.title()), color=theme_color(server.theme))
+    embed = discord.Embed(title=_title_for(action, confession), color=theme_color(server.theme))
 
     if author is not None:
         submitter_value = f"||{author.mention} (`{author.id}`)||"
@@ -33,7 +40,7 @@ def _build_log_embed(
     embed.add_field(name="Submitted by", value=submitter_value, inline=False)
 
     content = confession.content if len(confession.content) <= 1024 else confession.content[:1021] + "..."
-    embed.add_field(name="Confession", value=content, inline=False)
+    embed.add_field(name="Confession" if not confession.parent_id else "Reply", value=content, inline=False)
 
     embed.add_field(
         name="Submitted",
@@ -96,7 +103,7 @@ async def send_event_log(
     footer: str | None = None,
 ) -> None:
     """Best-effort audit-channel output for events not tied to a single
-    confession (e.g. user restrictions, report escalations)."""
+    confession (e.g. user restrictions)."""
     if not server.logging_enabled or not server.logging_channel_id:
         return
     channel = guild.get_channel(server.logging_channel_id)

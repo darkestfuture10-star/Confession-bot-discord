@@ -10,15 +10,6 @@ from bot.utils.embeds import theme_color
 from bot.utils.permissions import can_moderate
 
 
-ACTION_LABELS = {
-    "submitted": "📝 Submitted",
-    "approved": "✅ Approved",
-    "rejected": "❌ Rejected",
-    "publication_failed": "⚠️ Publication failed",
-    "review_delivery_failed": "⚠️ Review delivery failed",
-}
-
-
 class Logs(commands.Cog):
     """Read-only access to the moderation audit trail for individual confessions."""
 
@@ -29,6 +20,7 @@ class Logs(commands.Cog):
         name="confession-logs",
         description="View the moderation audit trail for a confession (moderators only).",
     )
+    @app_commands.default_permissions(manage_messages=True)
     @app_commands.describe(confession_id="The confession ID to look up")
     async def confession_logs(self, interaction: discord.Interaction, confession_id: int) -> None:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
