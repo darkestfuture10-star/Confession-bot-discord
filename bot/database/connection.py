@@ -9,11 +9,15 @@ from sqlalchemy.orm import DeclarativeBase
 from bot.config.settings import DATABASE_URL
 
 
+
 # Database
 
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
+    connect_args={
+        "ssl": "require",
+    },
 )
 
 AsyncSessionLocal = async_sessionmaker(
