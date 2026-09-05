@@ -40,6 +40,11 @@ async def build_config_embed(guild: discord.Guild, server) -> discord.Embed:
     embed.add_field(name="Logging", value=logging_status, inline=True)
     embed.add_field(name="Logging Channel", value=logging_channel, inline=False)
     embed.add_field(name="Theme", value=theme_label(server.theme), inline=True)
+    embed.add_field(
+        name="Sensitive Content Alerts",
+        value="✅ Enabled" if server.sensitive_content_detection else "❌ Disabled",
+        inline=True,
+    )
     return embed
 
 
@@ -271,6 +276,14 @@ class ConfigView(discord.ui.View):
     async def moderator_role(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("Select the moderator role below.", view=ModeratorRoleView(self.panel_message), ephemeral=True)
 
+    @discord.ui.button(label="Sensitive Content Alerts", style=discord.ButtonStyle.secondary)
+    async def sensitive_detection(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "Choose whether confessions matching sensitive/crisis keywords get flagged for moderators during review.",
+            view=SensitiveDetectionView(self.panel_message),
+            ephemeral=True,
+        )
+
     @discord.ui.button(label="Approval", style=discord.ButtonStyle.secondary)
     async def approval(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("Choose whether confessions require moderator approval.", view=ApprovalView(self.panel_message), ephemeral=True)
@@ -287,6 +300,38 @@ class ConfigView(discord.ui.View):
     async def theme(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("Choose a color theme for confession embeds.", view=ThemeView(self.panel_message), ephemeral=True)
 
+class SensitiveDetectionView(discord.ui.View):
+    def __init__(self, panel_message: discord.Message | None = None):
+        super().__init__(timeout=60)
+        self.panel_message = panel_message
+
+    @discord.ui.button(label="Enable", style=discord.ButtonStyle.success)
+    async def enable(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_detection(interaction, True)
+
+    @discord.ui.button(label="Disable", style=discord.ButtonStyle.danger)
+    async def disable(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_detection(interaction, False)
+
+    async def set_detection(self, interaction: discord.Interaction, enabled: bool):
+        if interaction.guild is None:
+            await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
+            return
+
+        session = get_session()
+        try:
+            repository = ServerRepository(session)
+            server = await repository.set_sensitive_detection(interaction.guild.id, enabled)
+        except Exception:
+            await session.rollback()
+            await interaction.response.send_message("❌ Failed to update this setting.", ephemeral=True)
+            raise
+        finally:
+            await session.close()
+
+        await refresh_panel(self.panel_message, interaction.guild, server)
+        status = "enabled" if enabled else "disabled"
+        await interaction.response.send_message(f"✅ Sensitive content detection {status}.", ephemeral=True)
 
 class Config(commands.Cog):
     def __init__(self, bot: commands.Bot):

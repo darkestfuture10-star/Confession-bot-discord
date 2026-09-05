@@ -84,6 +84,13 @@ class ServerRepository:
         )
         await self.session.commit()
 
+    async def set_sensitive_detection(self, server_id: int, enabled: bool) -> Server:
+        server = await self.get_or_create(server_id)
+        server.sensitive_content_detection = enabled
+        await self.session.commit()
+        await self.session.refresh(server)
+        return server
+
 
 class ConfessionRepository:
     def __init__(self, session: AsyncSession):
@@ -165,6 +172,82 @@ class ConfessionRepository:
             .group_by(Confession.status)
         )
         return {status: count for status, count in result.all()}
+
+    async def count_pending(self, server_id: int) -> int:
+        result = await self.session.execute(
+            select(func.count()).select_from(Confession).where(
+                Confession.server_id == server_id, Confession.status == "pending"
+            )
+        )
+        return result.scalar_one()
+
+    async def count_confessions_and_replies(self, server_id: int) -> tuple[int, int]:
+        result = await self.session.execute(
+            select(func.count()).select_from(Confession).where(
+                Confession.server_id == server_id, Confession.parent_id.is_(None)
+            )
+        )
+        confessions = result.scalar_one()
+        result = await self.session.execute(
+            select(func.count()).select_from(Confession).where(
+                Confession.server_id == server_id, Confession.parent_id.is_not(None)
+            )
+        )
+        replies = result.scalar_one()
+        return confessions, replies
+
+    async def count_since(self, server_id: int, since: datetime) -> int:
+        result = await self.session.execute(
+            select(func.count()).select_from(Confession).where(
+                Confession.server_id == server_id, Confession.submitted_at >= since
+            )
+        )
+        return result.scalar_one()
+
+    async def get_last_submission_time(self, server_id: int, author_id: int) -> datetime | None:
+        result = await self.session.execute(
+            select(Confession.submitted_at)
+            .where(Confession.server_id == server_id, Confession.author_id == author_id)
+            .order_by(Confession.submitted_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_last_content_by_author(self, server_id: int, author_id: int) -> str | None:
+        result = await self.session.execute(
+            select(Confession.content)
+            .where(Confession.server_id == server_id, Confession.author_id == author_id)
+            .order_by(Confession.submitted_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def count_recent_by_author(self, server_id: int, author_id: int, since: datetime) -> int:
+        result = await self.session.execute(
+            select(func.count()).select_from(Confession).where(
+                Confession.server_id == server_id,
+                Confession.author_id == author_id,
+                Confession.submitted_at >= since,
+            )
+        )
+        return result.scalar_one()
+
+    async def moderator_stats(self, server_id: int) -> dict[int, dict[str, int]]:
+        """Per-moderator counts of approve/reject/delete actions for this server."""
+        result = await self.session.execute(
+            select(ModerationLog.actor_id, ModerationLog.action, func.count())
+            .join(Confession, Confession.id == ModerationLog.confession_id)
+            .where(
+                Confession.server_id == server_id,
+                ModerationLog.action.in_(["approved", "rejected", "deleted"]),
+                ModerationLog.actor_id.is_not(None),
+            )
+            .group_by(ModerationLog.actor_id, ModerationLog.action)
+        )
+        stats: dict[int, dict[str, int]] = {}
+        for actor_id, action, count in result.all():
+            stats.setdefault(actor_id, {"approved": 0, "rejected": 0, "deleted": 0})[action] = count
+        return stats
 
 
 class RestrictionRepository:

@@ -31,12 +31,26 @@ def public_confession_embed(confession_id: int, content: str, parent_id: int | N
     return embed
 
 
-def moderation_confession_embed(confession_id: int, content: str, author: discord.abc.User, parent_id: int | None = None, reply_number: int | None = None, theme: str | None = None) -> discord.Embed:
+def moderation_confession_embed(
+    confession_id: int,
+    content: str,
+    author: discord.abc.User,
+    parent_id: int | None = None,
+    reply_number: int | None = None,
+    theme: str | None = None,
+    sensitive: bool = False,
+) -> discord.Embed:
     embed = discord.Embed(title=f"Confession #{confession_id} awaiting review", description=content, color=theme_color(theme))
     if parent_id:
         embed.add_field(name="Replying to", value=f"Confession #{parent_id}", inline=False)
     if reply_number is not None:
         embed.add_field(name="Will post as", value=f"Anonymous Reply #{reply_number}", inline=False)
+    if sensitive:
+        embed.add_field(
+            name="⚠️ Content Note",
+            value="This confession may involve sensitive or crisis-related themes. Please review thoughtfully.",
+            inline=False,
+        )
     embed.add_field(name="Submitter (moderators only)", value=f"{author.mention}\n`{author.id}`", inline=False)
     embed.set_footer(text="Approve to post anonymously, or reject with an optional reason.")
     return embed

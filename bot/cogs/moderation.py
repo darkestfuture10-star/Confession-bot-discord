@@ -296,6 +296,53 @@ class DashboardView(discord.ui.View):
         if server is None:
             return
         await interaction.response.send_modal(SearchLogsModal())
+    @discord.ui.button(label="🔧 Permissions", style=discord.ButtonStyle.secondary)
+    async def permissions(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        server = await _authorize(interaction)
+        if server is None:
+            return
+
+        required = ["send_messages", "embed_links", "manage_messages", "read_message_history"]
+        lines = []
+        for label, channel_id in (("Confession channel", server.confession_channel_id), ("Logging channel", server.logging_channel_id)):
+            if not channel_id:
+                lines.append(f"**{label}:** not configured")
+                continue
+            channel = interaction.guild.get_channel(channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                lines.append(f"**{label}:** channel not found")
+                continue
+            perms = channel.permissions_for(interaction.guild.me)
+            missing = [name.replace("_", " ").title() for name in required if not getattr(perms, name)]
+            lines.append(f"**{label}** ({channel.mention}): " + ("✅ All good" if not missing else "⚠️ Missing " + ", ".join(missing)))
+
+        embed = discord.Embed(title="🔧 Bot Permission Check", description="\n".join(lines), color=theme_color(server.theme))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="👮 Moderator Stats", style=discord.ButtonStyle.secondary)
+    async def moderator_stats(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        server = await _authorize(interaction)
+        if server is None:
+            return
+        session = get_session()
+        try:
+            stats = await ConfessionRepository(session).moderator_stats(interaction.guild.id)
+        finally:
+            await session.close()
+
+        embed = discord.Embed(title="👮 Moderator Statistics", color=theme_color(server.theme))
+        if not stats:
+            embed.description = "No moderation actions recorded yet."
+        else:
+            ranked = sorted(stats.items(), key=lambda item: sum(item[1].values()), reverse=True)
+            for rank, (moderator_id, counts) in enumerate(ranked, start=1):
+                total = sum(counts.values())
+                embed.add_field(
+                    name=f"#{rank} — {total} actions",
+                    value=f"<@{moderator_id}>\n✅ Approved: {counts['approved']} · ❌ Rejected: {counts['rejected']} · 🗑️ Deleted: {counts['deleted']}",
+                    inline=False,
+                )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="👥 Restricted Users", style=discord.ButtonStyle.primary)
     async def restricted_users(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

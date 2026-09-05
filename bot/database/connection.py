@@ -84,6 +84,14 @@ async def initialize_database():
                 """
             )
         )
+        await connection.execute(
+            text(
+                """
+                ALTER TABLE servers
+                ADD COLUMN IF NOT EXISTS sensitive_content_detection BOOLEAN NOT NULL DEFAULT FALSE
+                """
+            )
+        )
 
         # ``create_all`` intentionally does not alter existing PostgreSQL tables.
         # These additive migrations preserve submissions made with earlier builds.

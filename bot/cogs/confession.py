@@ -8,8 +8,9 @@ from bot.database.connection import get_session
 from bot.database.models import Server
 from bot.database.repository import ConfessionRepository, RestrictionRepository, ServerRepository
 from bot.services.logging_service import send_moderation_log
+from bot.services.security_service import evaluate_submission, record_and_check_burst
 from bot.utils.embeds import moderation_confession_embed, public_confession_embed
-from bot.utils.helpers import extract_confession_id, extract_confession_id_from_footer
+from bot.utils.helpers import contains_sensitive_keywords, extract_confession_id, extract_confession_id_from_footer
 from bot.utils.permissions import can_moderate
 
 
@@ -17,15 +18,12 @@ REVIEW_TITLE_PREFIX = "Confession #"
 
 
 def _confession_id_from_message(message: discord.Message | None, prefix: str) -> int | None:
-    """Used for moderation review embeds, which always title with the real ID."""
     if not message or not message.embeds:
         return None
     return extract_confession_id(message.embeds[0].title, prefix)
 
 
 def _confession_id_from_public_message(message: discord.Message | None) -> int | None:
-    """Used for public confession/reply embeds, where the title may show a
-    different per-type number (Confession vs Reply) than the real ID."""
     if not message or not message.embeds:
         return None
     footer = message.embeds[0].footer
@@ -113,8 +111,6 @@ class RejectModal(discord.ui.Modal, title="Reject confession"):
 
 
 class ReplyOnlyView(discord.ui.View):
-    """Persistent view attached to every public confession message."""
-
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -128,9 +124,6 @@ class ReplyOnlyView(discord.ui.View):
 
 
 class PublicConfessionView(ReplyOnlyView):
-    """Reply + Submit a Confession. Only the newest confession message uses
-    this; older ones get demoted to ``ReplyOnlyView``."""
-
     def __init__(self):
         super().__init__()
         submit_button = discord.ui.Button(
@@ -176,6 +169,10 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
         await interaction.response.send_message("❌ A confession cannot be empty.", ephemeral=True)
         return
 
+    # 8.4 Mention abuse protection: neutralize @everyone/@here/user/role
+    # mentions so they render as inert text instead of resolving.
+    content = discord.utils.escape_mentions(content)
+
     session = get_session()
     try:
         restriction = await RestrictionRepository(session).get_active(interaction.guild.id, interaction.user.id)
@@ -208,6 +205,12 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
 
         confessions = ConfessionRepository(session)
 
+        # 8.1/8.2/8.3/8.7 anti-abuse checks
+        block_reason = await evaluate_submission(confessions, server, interaction.user.id, content)
+        if block_reason is not None:
+            await interaction.response.send_message(block_reason, ephemeral=True)
+            return
+
         parent_confession = None
         if parent_id is not None:
             parent_confession = await confessions.get(parent_id, interaction.guild.id)
@@ -228,9 +231,11 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
             reply_number=reply_number,
         )
         await confessions.add_log(confession.id, "submitted", interaction.user.id)
+        await record_and_check_burst(interaction.guild, server)
 
         if server.approval_enabled:
             role_mention = f"<@&{server.moderator_role_id}> " if server.moderator_role_id else ""
+            sensitive = server.sensitive_content_detection and contains_sensitive_keywords(content)
             try:
                 await review_channel.send(
                     role_mention,
@@ -239,6 +244,7 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
                         parent_id=parent_confession.id if parent_confession else None,
                         reply_number=confession.reply_number,
                         theme=server.theme,
+                        sensitive=sensitive,
                     ),
                     view=ModerationView(),
                     allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),

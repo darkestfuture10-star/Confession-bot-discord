@@ -72,6 +72,7 @@ class ConfessionBot(commands.Bot):
         await self.load_extension("bot.cogs.config")
         await self.load_extension("bot.cogs.confession")
         await self.load_extension("bot.cogs.moderation")
+        await self.load_extension("bot.cogs.stats")
 
         # Slash command synchronization
 
