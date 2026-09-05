@@ -43,9 +43,6 @@ class Server(Base):
         nullable=True,
     )
 
-    # The most recently posted public confession message in the confession
-    # channel. Tracked so only that single message keeps the quick "Submit a
-    # Confession" button once a newer confession is posted.
     last_confession_message_id: Mapped[int | None] = mapped_column(
         BigInteger,
         nullable=True,
@@ -78,43 +75,76 @@ class Server(Base):
 
 
 class Confession(Base):
-    """A submitted confession. The author ID is never used in public output."""
+    """A confession submitted to a server."""
 
     __tablename__ = "confessions"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        autoincrement=True,
+    )
+
     server_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("servers.id", ondelete="CASCADE"), index=True
+        BigInteger,
+        ForeignKey("servers.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
     )
-    # Keep the existing database column name while using clearer application wording.
-    author_id: Mapped[int] = mapped_column("user_id", BigInteger, nullable=False, index=True)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False, index=True)
-    submitted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    reviewed_by_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    public_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    # Set when this confession is a reply to another confession. No DB-level
-    # foreign key constraint, matching the informal style of the other
-    # migration-added columns above.
-    parent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    reply_number: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
-
-class ModerationLog(Base):
-    """Immutable record of a confession lifecycle event."""
-
-    __tablename__ = "moderation_logs"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    confession_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("confessions.id", ondelete="CASCADE"), index=True
+    author_id: Mapped[int] = mapped_column(
+        BigInteger,
+        index=True,
+        nullable=False,
     )
-    actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    action: Mapped[str] = mapped_column(String(30), nullable=False)
-    details: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    content: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="pending",
+        nullable=False,
+        index=True,
+    )
+
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    reviewed_by_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
+    rejection_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    public_message_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
+    parent_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
+    reply_number: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
 
 
 class UserRestriction(Base):
@@ -122,16 +152,96 @@ class UserRestriction(Base):
 
     __tablename__ = "user_restrictions"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    server_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("servers.id", ondelete="CASCADE"), index=True
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        autoincrement=True,
     )
-    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
-    moderator_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    # None = permanent restriction.
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    lifted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    lifted_by_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    server_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("servers.id", ondelete="CASCADE"),
+        index=True,
+    )
+
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        index=True,
+        nullable=False,
+    )
+
+    moderator_id: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+
+    reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    active: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+
+    lifted_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    lifted_by_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
+class ModerationLog(Base):
+    """Audit log for moderator actions on confessions."""
+
+    __tablename__ = "moderation_logs"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    confession_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("confessions.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+
+    action: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+
+    actor_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
+    details: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
