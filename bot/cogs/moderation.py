@@ -7,8 +7,10 @@ from discord.ext import commands
 from bot.database.connection import get_session
 from bot.database.repository import ConfessionRepository, RestrictionRepository, ServerRepository
 from bot.services.logging_service import send_event_log
+from bot.services.security_service import waive_next_submission
 from bot.utils.embeds import theme_color
 from bot.utils.helpers import parse_duration
+from bot.utils.pagination import FieldPaginatorView
 from bot.utils.permissions import can_moderate
 
 
@@ -21,21 +23,7 @@ ACTION_LABELS = {
     "deleted": "🗑️ Deleted",
 }
 
-
-async def build_queue_embed(server, pending) -> discord.Embed:
-    embed = discord.Embed(
-        title="Confessions awaiting review",
-        description=(
-            "Approve or reject these from their original review message. "
-            "This list is a recovery tool if that message was deleted or scrolled past."
-        ),
-        color=theme_color(server.theme),
-    )
-    for confession in pending:
-        preview = confession.content if len(confession.content) <= 100 else confession.content[:97] + "..."
-        submitted = discord.utils.format_dt(confession.submitted_at.replace(tzinfo=timezone.utc), style="R")
-        embed.add_field(name=f"#{confession.id} — submitted {submitted}", value=preview, inline=False)
-    return embed
+LIST_FETCH_LIMIT = 100  # generous fetch cap; the paginator handles display
 
 
 async def build_dashboard_embed(server, session) -> discord.Embed:
@@ -78,18 +66,62 @@ async def build_logs_embed(confession_id: int, guild_id: int, server, session) -
     return embed
 
 
+def _queue_fields(pending) -> list[tuple[str, str]]:
+    fields = []
+    for confession in pending:
+        preview = confession.content if len(confession.content) <= 100 else confession.content[:97] + "..."
+        submitted = discord.utils.format_dt(confession.submitted_at.replace(tzinfo=timezone.utc), style="R")
+        fields.append((f"#{confession.id} — submitted {submitted}", preview))
+    return fields
+
+
+def _restriction_fields(restrictions) -> list[tuple[str, str]]:
+    fields = []
+    for restriction in restrictions:
+        expiry = (
+            discord.utils.format_dt(restriction.expires_at.replace(tzinfo=timezone.utc), style="R")
+            if restriction.expires_at else "Permanent"
+        )
+        fields.append((
+            f"<@{restriction.user_id}>",
+            f"Expires: {expiry}\nReason: {restriction.reason or 'No reason given'}\nBy: <@{restriction.moderator_id}>",
+        ))
+    return fields
+
+
+def _moderator_stat_fields(stats: dict) -> list[tuple[str, str]]:
+    ranked = sorted(stats.items(), key=lambda item: sum(item[1].values()), reverse=True)
+    fields = []
+    for rank, (moderator_id, counts) in enumerate(ranked, start=1):
+        total = sum(counts.values())
+        fields.append((
+            f"#{rank} — {total} actions",
+            f"<@{moderator_id}>\n✅ Approved: {counts['approved']} · ❌ Rejected: {counts['rejected']} · 🗑️ Deleted: {counts['deleted']}",
+        ))
+    return fields
+
+
+async def _send(interaction: discord.Interaction, content: str = None, **kwargs) -> None:
+    """Route through followup if the interaction was already deferred/responded
+    to, otherwise send a direct response."""
+    if interaction.response.is_done():
+        await interaction.followup.send(content, **kwargs)
+    else:
+        await interaction.response.send_message(content, **kwargs)
+
+
 async def _authorize(interaction: discord.Interaction):
     """Fetches the server config and verifies the user can moderate.
     Sends an ephemeral error and returns None if not authorized; otherwise
-    returns the Server without having responded to the interaction yet."""
+    returns the Server. Safe to call before or after the caller has deferred."""
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-        await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
+        await _send(interaction, "❌ This can only be used in a server.", ephemeral=True)
         return None
     session = get_session()
     try:
         server = await ServerRepository(session).get(interaction.guild.id)
         if server is None or not can_moderate(interaction.user, server.moderator_role_id):
-            await interaction.response.send_message("❌ You do not have permission to do this.", ephemeral=True)
+            await _send(interaction, "❌ You do not have permission to do this.", ephemeral=True)
             return None
         return server
     finally:
@@ -97,8 +129,10 @@ async def _authorize(interaction: discord.Interaction):
 
 
 async def _perform_restrict(interaction: discord.Interaction, target_id: int, duration_text: str | None, reason: str | None) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-        await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
+        await interaction.followup.send("❌ This can only be used in a server.", ephemeral=True)
         return
 
     expires_at = None
@@ -106,7 +140,7 @@ async def _perform_restrict(interaction: discord.Interaction, target_id: int, du
         try:
             expires_at = datetime.utcnow() + parse_duration(duration_text)
         except ValueError as error:
-            await interaction.response.send_message(f"❌ {error}", ephemeral=True)
+            await interaction.followup.send(f"❌ {error}", ephemeral=True)
             return
 
     session = get_session()
@@ -114,7 +148,7 @@ async def _perform_restrict(interaction: discord.Interaction, target_id: int, du
         servers = ServerRepository(session)
         server = await servers.get(interaction.guild.id)
         if server is None or not can_moderate(interaction.user, server.moderator_role_id):
-            await interaction.response.send_message("❌ You do not have permission to restrict users.", ephemeral=True)
+            await interaction.followup.send("❌ You do not have permission to restrict users.", ephemeral=True)
             return
         await RestrictionRepository(session).create(interaction.guild.id, target_id, interaction.user.id, reason, expires_at)
     finally:
@@ -127,12 +161,14 @@ async def _perform_restrict(interaction: discord.Interaction, target_id: int, du
         description=f"<@{target_id}> was restricted {duration_display} by {interaction.user.mention}.",
         fields=fields,
     )
-    await interaction.response.send_message(f"✅ <@{target_id}> is restricted {duration_display}.", ephemeral=True)
+    await interaction.followup.send(f"✅ <@{target_id}> is restricted {duration_display}.", ephemeral=True)
 
 
 async def _perform_unrestrict(interaction: discord.Interaction, target_id: int) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-        await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
+        await interaction.followup.send("❌ This can only be used in a server.", ephemeral=True)
         return
 
     session = get_session()
@@ -140,21 +176,48 @@ async def _perform_unrestrict(interaction: discord.Interaction, target_id: int) 
         servers = ServerRepository(session)
         server = await servers.get(interaction.guild.id)
         if server is None or not can_moderate(interaction.user, server.moderator_role_id):
-            await interaction.response.send_message("❌ You do not have permission to unrestrict users.", ephemeral=True)
+            await interaction.followup.send("❌ You do not have permission to unrestrict users.", ephemeral=True)
             return
         lifted = await RestrictionRepository(session).lift(interaction.guild.id, target_id, interaction.user.id)
     finally:
         await session.close()
 
     if not lifted:
-        await interaction.response.send_message(f"ℹ️ <@{target_id}> doesn't have an active restriction.", ephemeral=True)
+        await interaction.followup.send(f"ℹ️ <@{target_id}> doesn't have an active restriction.", ephemeral=True)
         return
 
     await send_event_log(
         interaction.guild, server, "🔓 Restriction Lifted",
         description=f"<@{target_id}>'s restriction was lifted by {interaction.user.mention}.",
     )
-    await interaction.response.send_message(f"✅ <@{target_id}>'s restriction has been lifted.", ephemeral=True)
+    await interaction.followup.send(f"✅ <@{target_id}>'s restriction has been lifted.", ephemeral=True)
+
+
+async def _perform_waive(interaction: discord.Interaction, target_id: int) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.followup.send("❌ This can only be used in a server.", ephemeral=True)
+        return
+
+    server = None
+    session = get_session()
+    try:
+        servers = ServerRepository(session)
+        server = await servers.get(interaction.guild.id)
+        if server is None or not can_moderate(interaction.user, server.moderator_role_id):
+            await interaction.followup.send("❌ You do not have permission to do this.", ephemeral=True)
+            return
+    finally:
+        await session.close()
+
+    waive_next_submission(interaction.guild.id, target_id)
+
+    await send_event_log(
+        interaction.guild, server, "⏱️ Cooldown Waived",
+        description=f"<@{target_id}>'s cooldown/rate-limit was waived for their next submission by {interaction.user.mention}.",
+    )
+    await interaction.followup.send(f"✅ <@{target_id}>'s cooldown is waived — their next submission will skip the cooldown and hourly limit.", ephemeral=True)
 
 
 class PanelDeleteModal(discord.ui.Modal, title="Delete a confession"):
@@ -191,13 +254,15 @@ class SearchLogsModal(discord.ui.Modal, title="Search confession logs"):
     confession_id = discord.ui.TextInput(label="Confession ID", required=True, max_length=10)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
         server = await _authorize(interaction)
         if server is None:
             return
         try:
             confession_id = int(str(self.confession_id).strip())
         except ValueError:
-            await interaction.response.send_message("❌ Confession ID must be a number.", ephemeral=True)
+            await interaction.followup.send("❌ Confession ID must be a number.", ephemeral=True)
             return
 
         session = get_session()
@@ -207,9 +272,9 @@ class SearchLogsModal(discord.ui.Modal, title="Search confession logs"):
             await session.close()
 
         if embed is None:
-            await interaction.response.send_message("❌ No confession with that ID exists in this server.", ephemeral=True)
+            await interaction.followup.send("❌ No confession with that ID exists in this server.", ephemeral=True)
             return
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class UserPickerView(discord.ui.View):
@@ -224,9 +289,12 @@ class UserPickerView(discord.ui.View):
     async def on_select(self, interaction: discord.Interaction) -> None:
         target = self.select.values[0]
         if self.mode == "restrict":
+            # Modals must be the direct/immediate response — cannot defer first.
             await interaction.response.send_modal(PanelRestrictModal(target.id))
-        else:
+        elif self.mode == "unrestrict":
             await _perform_unrestrict(interaction, target.id)
+        elif self.mode == "waive":
+            await _perform_waive(interaction, target.id)
 
 
 class ModerationPanelView(discord.ui.View):
@@ -235,22 +303,29 @@ class ModerationPanelView(discord.ui.View):
 
     @discord.ui.button(label="📋 Queue", style=discord.ButtonStyle.primary)
     async def queue(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
         server = await _authorize(interaction)
         if server is None:
             return
         session = get_session()
         try:
             if not server.approval_enabled:
-                await interaction.response.send_message("ℹ️ Moderator approval is currently disabled, so nothing is queued.", ephemeral=True)
+                await interaction.followup.send("ℹ️ Moderator approval is currently disabled, so nothing is queued.", ephemeral=True)
                 return
-            pending = await ConfessionRepository(session).list_pending(interaction.guild.id)
-            if not pending:
-                await interaction.response.send_message("✅ No confessions are currently awaiting review.", ephemeral=True)
-                return
-            embed = await build_queue_embed(server, pending)
+            pending = await ConfessionRepository(session).list_pending(interaction.guild.id, limit=LIST_FETCH_LIMIT)
         finally:
             await session.close()
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        if not pending:
+            await interaction.followup.send("✅ No confessions are currently awaiting review.", ephemeral=True)
+            return
+
+        paginator = FieldPaginatorView(
+            "Confessions awaiting review", theme_color(server.theme), _queue_fields(pending),
+            empty_message="No confessions are currently awaiting review.",
+        )
+        await interaction.followup.send(embed=paginator.build_embed(), view=paginator, ephemeral=True)
 
     @discord.ui.button(label="🗑️ Delete", style=discord.ButtonStyle.danger)
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -273,6 +348,16 @@ class ModerationPanelView(discord.ui.View):
             return
         await interaction.response.send_message("Select a user to unrestrict.", view=UserPickerView("unrestrict"), ephemeral=True)
 
+    @discord.ui.button(label="⏱️ Waive Cooldown", style=discord.ButtonStyle.secondary)
+    async def waive(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        server = await _authorize(interaction)
+        if server is None:
+            return
+        await interaction.response.send_message(
+            "Select a user to waive the cooldown/rate-limit for (their next submission only).",
+            view=UserPickerView("waive"), ephemeral=True,
+        )
+
 
 class DashboardView(discord.ui.View):
     def __init__(self):
@@ -280,6 +365,8 @@ class DashboardView(discord.ui.View):
 
     @discord.ui.button(label="🔄 Refresh", style=discord.ButtonStyle.secondary)
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer()
+
         server = await _authorize(interaction)
         if server is None:
             return
@@ -288,7 +375,7 @@ class DashboardView(discord.ui.View):
             embed = await build_dashboard_embed(server, session)
         finally:
             await session.close()
-        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.edit_original_response(embed=embed, view=self)
 
     @discord.ui.button(label="🔍 Search Logs", style=discord.ButtonStyle.primary)
     async def search_logs(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -296,6 +383,26 @@ class DashboardView(discord.ui.View):
         if server is None:
             return
         await interaction.response.send_modal(SearchLogsModal())
+
+    @discord.ui.button(label="👥 Restricted Users", style=discord.ButtonStyle.primary)
+    async def restricted_users(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        server = await _authorize(interaction)
+        if server is None:
+            return
+        session = get_session()
+        try:
+            active = await RestrictionRepository(session).list_active(interaction.guild.id, limit=LIST_FETCH_LIMIT)
+        finally:
+            await session.close()
+
+        paginator = FieldPaginatorView(
+            "Currently restricted users", theme_color(server.theme), _restriction_fields(active),
+            empty_message="No active restrictions.",
+        )
+        await interaction.followup.send(embed=paginator.build_embed(), view=paginator, ephemeral=True)
+
     @discord.ui.button(label="🔧 Permissions", style=discord.ButtonStyle.secondary)
     async def permissions(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         server = await _authorize(interaction)
@@ -321,6 +428,8 @@ class DashboardView(discord.ui.View):
 
     @discord.ui.button(label="👮 Moderator Stats", style=discord.ButtonStyle.secondary)
     async def moderator_stats(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
         server = await _authorize(interaction)
         if server is None:
             return
@@ -330,46 +439,11 @@ class DashboardView(discord.ui.View):
         finally:
             await session.close()
 
-        embed = discord.Embed(title="👮 Moderator Statistics", color=theme_color(server.theme))
-        if not stats:
-            embed.description = "No moderation actions recorded yet."
-        else:
-            ranked = sorted(stats.items(), key=lambda item: sum(item[1].values()), reverse=True)
-            for rank, (moderator_id, counts) in enumerate(ranked, start=1):
-                total = sum(counts.values())
-                embed.add_field(
-                    name=f"#{rank} — {total} actions",
-                    value=f"<@{moderator_id}>\n✅ Approved: {counts['approved']} · ❌ Rejected: {counts['rejected']} · 🗑️ Deleted: {counts['deleted']}",
-                    inline=False,
-                )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="👥 Restricted Users", style=discord.ButtonStyle.primary)
-    async def restricted_users(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        server = await _authorize(interaction)
-        if server is None:
-            return
-        session = get_session()
-        try:
-            active = await RestrictionRepository(session).list_active(interaction.guild.id)
-        finally:
-            await session.close()
-
-        embed = discord.Embed(title="Currently restricted users", color=theme_color(server.theme))
-        if not active:
-            embed.description = "No active restrictions."
-        else:
-            for restriction in active:
-                expiry = (
-                    discord.utils.format_dt(restriction.expires_at.replace(tzinfo=timezone.utc), style="R")
-                    if restriction.expires_at else "Permanent"
-                )
-                embed.add_field(
-                    name=f"<@{restriction.user_id}>",
-                    value=f"Expires: {expiry}\nReason: {restriction.reason or 'No reason given'}\nBy: <@{restriction.moderator_id}>",
-                    inline=False,
-                )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        paginator = FieldPaginatorView(
+            "👮 Moderator Statistics", theme_color(server.theme), _moderator_stat_fields(stats),
+            empty_message="No moderation actions recorded yet.",
+        )
+        await interaction.followup.send(embed=paginator.build_embed(), view=paginator, ephemeral=True)
 
 
 class Moderation(commands.Cog):
@@ -392,6 +466,8 @@ class Moderation(commands.Cog):
     @app_commands.command(name="moderator-dashboard", description="View confession moderation stats and logs (moderators only).")
     @app_commands.default_permissions(manage_messages=True)
     async def moderator_dashboard(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
         server = await _authorize(interaction)
         if server is None:
             return
@@ -400,7 +476,7 @@ class Moderation(commands.Cog):
             embed = await build_dashboard_embed(server, session)
         finally:
             await session.close()
-        await interaction.response.send_message(embed=embed, view=DashboardView(), ephemeral=True)
+        await interaction.followup.send(embed=embed, view=DashboardView(), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

@@ -17,6 +17,24 @@ BURST_WINDOW_SECONDS = 60
 BURST_ALERT_COOLDOWN_SECONDS = 5 * 60
 
 
+# In-memory, one-shot waivers a moderator can grant so a specific user's
+# very next submission skips the cooldown/rate-limit checks. Resets on
+# restart, which is fine — a mod can just re-grant it if that ever matters.
+_cooldown_waivers: set[tuple[int, int]] = set()
+
+
+def waive_next_submission(server_id: int, user_id: int) -> None:
+    _cooldown_waivers.add((server_id, user_id))
+
+
+def _consume_waiver(server_id: int, user_id: int) -> bool:
+    key = (server_id, user_id)
+    if key in _cooldown_waivers:
+        _cooldown_waivers.discard(key)
+        return True
+    return False
+
+
 async def evaluate_submission(confessions: ConfessionRepository, server: Server, author_id: int, content: str) -> str | None:
     """Runs the 8.1/8.2/8.3/8.7 checks. Returns an error message if the
     submission should be blocked, or None if it's allowed. Mention
@@ -27,19 +45,21 @@ async def evaluate_submission(confessions: ConfessionRepository, server: Server,
         return "❌ That doesn't look like a real confession (too short, repeated characters, or mostly symbols)."
 
     now = datetime.utcnow()
+    waived = _consume_waiver(server.id, author_id)
 
-    last_time = await confessions.get_last_submission_time(server.id, author_id)
-    if last_time is not None:
-        elapsed = (now - last_time).total_seconds()
-        if elapsed < COOLDOWN_SECONDS:
-            wait = int(COOLDOWN_SECONDS - elapsed) + 1
-            return f"⏳ Please wait {wait}s before submitting another confession."
+    if not waived:
+        last_time = await confessions.get_last_submission_time(server.id, author_id)
+        if last_time is not None:
+            elapsed = (now - last_time).total_seconds()
+            if elapsed < COOLDOWN_SECONDS:
+                wait = int(COOLDOWN_SECONDS - elapsed) + 1
+                return f"⏳ Please wait {wait}s before submitting another confession."
 
-    recent_count = await confessions.count_recent_by_author(
-        server.id, author_id, now - timedelta(seconds=RATE_LIMIT_WINDOW_SECONDS)
-    )
-    if recent_count >= RATE_LIMIT_MAX:
-        return f"❌ You've hit the limit of {RATE_LIMIT_MAX} confessions per hour. Please try again later."
+        recent_count = await confessions.count_recent_by_author(
+            server.id, author_id, now - timedelta(seconds=RATE_LIMIT_WINDOW_SECONDS)
+        )
+        if recent_count >= RATE_LIMIT_MAX:
+            return f"❌ You've hit the limit of {RATE_LIMIT_MAX} confessions per hour. Please try again later."
 
     last_content = await confessions.get_last_content_by_author(server.id, author_id)
     if last_content is not None and normalize_for_comparison(last_content) == normalize_for_comparison(content):

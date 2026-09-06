@@ -160,13 +160,19 @@ class ModerationView(discord.ui.View):
 
 
 async def submit_confession(interaction: discord.Interaction, message: str, parent_id: int | None = None) -> None:
+    # Defer immediately: the anti-abuse checks below do several sequential
+    # DB round-trips before we know what to say back, which can easily blow
+    # past Discord's 3-second first-response window and invalidate the
+    # interaction entirely ("Unknown interaction").
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
     if interaction.guild is None:
-        await interaction.response.send_message("❌ Confessions can only be submitted in a server.", ephemeral=True)
+        await interaction.followup.send("❌ Confessions can only be submitted in a server.", ephemeral=True)
         return
 
     content = message.strip()
     if not content:
-        await interaction.response.send_message("❌ A confession cannot be empty.", ephemeral=True)
+        await interaction.followup.send("❌ A confession cannot be empty.", ephemeral=True)
         return
 
     # 8.4 Mention abuse protection: neutralize @everyone/@here/user/role
@@ -184,23 +190,23 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
                 detail = "Your confession access has been permanently restricted."
             if restriction.reason:
                 detail += f"\nReason: {restriction.reason}"
-            await interaction.response.send_message(f"❌ {detail}", ephemeral=True)
+            await interaction.followup.send(f"❌ {detail}", ephemeral=True)
             return
 
         servers = ServerRepository(session)
         server = await servers.get(interaction.guild.id)
         if server is None or not server.confession_channel_id:
-            await interaction.response.send_message("❌ This server has not configured a confession channel yet.", ephemeral=True)
+            await interaction.followup.send("❌ This server has not configured a confession channel yet.", ephemeral=True)
             return
         if server.approval_enabled and not server.logging_channel_id:
-            await interaction.response.send_message("❌ Moderator approval is enabled, but no logging/review channel is configured. Ask an administrator to run `/config`.", ephemeral=True)
+            await interaction.followup.send("❌ Moderator approval is enabled, but no logging/review channel is configured. Ask an administrator to run `/config`.", ephemeral=True)
             return
 
         review_channel = None
         if server.approval_enabled:
             review_channel = interaction.guild.get_channel(server.logging_channel_id)
             if not isinstance(review_channel, discord.TextChannel):
-                await interaction.response.send_message("❌ The configured review channel is unavailable. Ask an administrator to reconfigure it.", ephemeral=True)
+                await interaction.followup.send("❌ The configured review channel is unavailable. Ask an administrator to reconfigure it.", ephemeral=True)
                 return
 
         confessions = ConfessionRepository(session)
@@ -208,14 +214,14 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
         # 8.1/8.2/8.3/8.7 anti-abuse checks
         block_reason = await evaluate_submission(confessions, server, interaction.user.id, content)
         if block_reason is not None:
-            await interaction.response.send_message(block_reason, ephemeral=True)
+            await interaction.followup.send(block_reason, ephemeral=True)
             return
 
         parent_confession = None
         if parent_id is not None:
             parent_confession = await confessions.get(parent_id, interaction.guild.id)
             if parent_confession is None:
-                await interaction.response.send_message("❌ The confession you're replying to no longer exists.", ephemeral=True)
+                await interaction.followup.send("❌ The confession you're replying to no longer exists.", ephemeral=True)
                 return
 
         reply_number = None
@@ -252,10 +258,10 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
             except discord.HTTPException as error:
                 await confessions.set_status(confession.id, "review_delivery_failed")
                 await confessions.add_log(confession.id, "review_delivery_failed", details=str(error))
-                await interaction.response.send_message(f"⚠️ Your confession `#{confession.id}` was saved but could not reach moderators. Please contact an administrator.", ephemeral=True)
+                await interaction.followup.send(f"⚠️ Your confession `#{confession.id}` was saved but could not reach moderators. Please contact an administrator.", ephemeral=True)
                 return
             await send_moderation_log(interaction.guild, server, "submitted", confession, author=interaction.user)
-            await interaction.response.send_message(f"✅ Your confession was submitted anonymously as `#{confession.id}` and is awaiting review.", ephemeral=True)
+            await interaction.followup.send(f"✅ Your confession was submitted anonymously as `#{confession.id}` and is awaiting review.", ephemeral=True)
         else:
             reference_message_id = parent_confession.public_message_id if parent_confession else None
             try:
@@ -270,10 +276,10 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
             except (discord.HTTPException, ValueError) as error:
                 await confessions.set_status(confession.id, "publication_failed")
                 await confessions.add_log(confession.id, "publication_failed", details=str(error))
-                await interaction.response.send_message(f"⚠️ Your confession `#{confession.id}` was saved but could not be posted. Please contact a moderator.", ephemeral=True)
+                await interaction.followup.send(f"⚠️ Your confession `#{confession.id}` was saved but could not be posted. Please contact a moderator.", ephemeral=True)
                 return
             await send_moderation_log(interaction.guild, server, "posted", confession, author=interaction.user)
-            await interaction.response.send_message(f"✅ Your anonymous confession was posted as `#{confession.id}`.", ephemeral=True)
+            await interaction.followup.send(f"✅ Your anonymous confession was posted as `#{confession.id}`.", ephemeral=True)
     except Exception:
         await session.rollback()
         raise
@@ -282,8 +288,10 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
 
 
 async def review_confession(interaction: discord.Interaction, confession_id: int, status: str, reason: str | None = None) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-        await interaction.response.send_message("❌ Moderation is only available in a server.", ephemeral=True)
+        await interaction.followup.send("❌ Moderation is only available in a server.", ephemeral=True)
         return
 
     session = get_session()
@@ -291,16 +299,16 @@ async def review_confession(interaction: discord.Interaction, confession_id: int
         servers = ServerRepository(session)
         server = await servers.get(interaction.guild.id)
         if server is None or not can_moderate(interaction.user, server.moderator_role_id):
-            await interaction.response.send_message("❌ You do not have permission to moderate confessions.", ephemeral=True)
+            await interaction.followup.send("❌ You do not have permission to moderate confessions.", ephemeral=True)
             return
 
         confessions = ConfessionRepository(session)
         confession = await confessions.get(confession_id, interaction.guild.id)
         if confession is None:
-            await interaction.response.send_message("❌ This confession no longer exists.", ephemeral=True)
+            await interaction.followup.send("❌ This confession no longer exists.", ephemeral=True)
             return
         if not await confessions.review(confession_id, interaction.guild.id, interaction.user.id, status, reason):
-            await interaction.response.send_message("ℹ️ This confession has already been reviewed.", ephemeral=True)
+            await interaction.followup.send("ℹ️ This confession has already been reviewed.", ephemeral=True)
             return
 
         if status == "approved":
@@ -321,7 +329,7 @@ async def review_confession(interaction: discord.Interaction, confession_id: int
             except (discord.HTTPException, ValueError) as error:
                 await confessions.set_status(confession.id, "publication_failed")
                 await confessions.add_log(confession.id, "publication_failed", interaction.user.id, str(error))
-                await interaction.response.send_message("⚠️ Approved, but it could not be posted. Check the confession channel and bot permissions.", ephemeral=True)
+                await interaction.followup.send("⚠️ Approved, but it could not be posted. Check the confession channel and bot permissions.", ephemeral=True)
                 if interaction.message:
                     await interaction.message.edit(view=None)
                 return
@@ -340,7 +348,7 @@ async def review_confession(interaction: discord.Interaction, confession_id: int
             interaction.guild, server, action, confession,
             author=author, moderator=interaction.user, reason=reason,
         )
-        await interaction.response.send_message(f"✅ Confession #{confession.id} {action}.", ephemeral=True)
+        await interaction.followup.send(f"✅ Confession #{confession.id} {action}.", ephemeral=True)
         if interaction.message:
             await interaction.message.edit(view=None)
     except Exception:
@@ -351,8 +359,10 @@ async def review_confession(interaction: discord.Interaction, confession_id: int
 
 
 async def delete_confession(interaction: discord.Interaction, confession_id: int, reason: str) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-        await interaction.response.send_message("❌ Moderation is only available in a server.", ephemeral=True)
+        await interaction.followup.send("❌ Moderation is only available in a server.", ephemeral=True)
         return
 
     session = get_session()
@@ -360,16 +370,16 @@ async def delete_confession(interaction: discord.Interaction, confession_id: int
         servers = ServerRepository(session)
         server = await servers.get(interaction.guild.id)
         if server is None or not can_moderate(interaction.user, server.moderator_role_id):
-            await interaction.response.send_message("❌ You do not have permission to delete confessions.", ephemeral=True)
+            await interaction.followup.send("❌ You do not have permission to delete confessions.", ephemeral=True)
             return
 
         confessions = ConfessionRepository(session)
         confession = await confessions.get(confession_id, interaction.guild.id)
         if confession is None:
-            await interaction.response.send_message("❌ This confession no longer exists.", ephemeral=True)
+            await interaction.followup.send("❌ This confession no longer exists.", ephemeral=True)
             return
         if confession.status != "approved":
-            await interaction.response.send_message(f"❌ Only posted confessions can be deleted (current status: {confession.status}).", ephemeral=True)
+            await interaction.followup.send(f"❌ Only posted confessions can be deleted (current status: {confession.status}).", ephemeral=True)
             return
 
         if confession.public_message_id and server.confession_channel_id:
@@ -395,7 +405,7 @@ async def delete_confession(interaction: discord.Interaction, confession_id: int
             interaction.guild, server, "deleted", confession,
             author=author, moderator=interaction.user, reason=reason,
         )
-        await interaction.response.send_message(f"✅ Confession #{confession_id} deleted.", ephemeral=True)
+        await interaction.followup.send(f"✅ Confession #{confession_id} deleted.", ephemeral=True)
     except Exception:
         await session.rollback()
         raise
