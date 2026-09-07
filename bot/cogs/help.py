@@ -26,9 +26,8 @@ HELP_SECTIONS = [
         "emoji": "📝",
         "title": "Submitting a Confession",
         "description": (
-            "**/confess** `<message>` — submit an anonymous confession (up to 2,000 characters).\n\n"
-            "• Your identity is never shown publicly — only moderators can see who "
-            "submitted something, and only while reviewing it.\n"
+            "**/confess** `<message>` submit an anonymous confession (up to 2,000 characters).\n\n"
+            "• Your identity is never shown publicly."
             "• A short cooldown applies between submissions, plus an hourly limit, "
             "to keep things spam-free.\n"
             "• Any @mentions you include are automatically neutralized so they "
@@ -43,8 +42,7 @@ HELP_SECTIONS = [
         "title": "Replying to a Confession",
         "description": (
             "Every confession has a **💬 Reply** button. Replies get their own "
-            "separate numbering — *Anonymous Reply #1, #2, ...* — so they're "
-            "easy to tell apart from top-level confessions.\n\n"
+            "separate numbering like  *Anonymous Reply #1, #2 ...* 
             "Replies go through the same review process as regular confessions "
             "when moderator approval is enabled, and appear threaded under the "
             "original message once posted."
