@@ -84,6 +84,17 @@ class ServerRepository:
         )
         await self.session.commit()
 
+    async def clear_last_confession_message_if_matches(self, server_id: int, message_id: int) -> None:
+        """Used when the tracked 'last confession message' is found to have
+        been deleted outside the bot, so we don't keep pointing at a dead
+        message for the Submit-button-demotion logic."""
+        await self.session.execute(
+            update(Server)
+            .where(Server.id == server_id, Server.last_confession_message_id == message_id)
+            .values(last_confession_message_id=None)
+        )
+        await self.session.commit()
+
     async def set_sensitive_detection(self, server_id: int, enabled: bool) -> Server:
         server = await self.get_or_create(server_id)
         server.sensitive_content_detection = enabled
@@ -117,6 +128,12 @@ class ConfessionRepository:
                 Confession.server_id == server_id,
                 Confession.author_id == author_id,
             )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_public_message(self, server_id: int, message_id: int) -> Confession | None:
+        result = await self.session.execute(
+            select(Confession).where(Confession.server_id == server_id, Confession.public_message_id == message_id)
         )
         return result.scalar_one_or_none()
 

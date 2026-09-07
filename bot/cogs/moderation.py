@@ -21,8 +21,8 @@ ACTION_LABELS = {
     "publication_failed": "⚠️ Publication failed",
     "review_delivery_failed": "⚠️ Review delivery failed",
     "deleted": "🗑️ Deleted",
+    "deleted_externally": "🗑️ Removed externally",
 }
-
 LIST_FETCH_LIMIT = 100  # generous fetch cap; the paginator handles display
 
 
@@ -37,7 +37,8 @@ async def build_dashboard_embed(server, session) -> discord.Embed:
     embed.add_field(name="⏳ Pending", value=str(counts.get("pending", 0)), inline=True)
     embed.add_field(name="✅ Approved", value=str(counts.get("approved", 0)), inline=True)
     embed.add_field(name="❌ Rejected", value=str(counts.get("rejected", 0)), inline=True)
-    embed.add_field(name="🗑️ Deleted", value=str(counts.get("deleted", 0)), inline=True)
+    deleted_count = counts.get("deleted", 0) + counts.get("deleted_externally", 0)
+    embed.add_field(name="🗑️ Deleted", value=str(deleted_count), inline=True)
     embed.add_field(name="🔨 Active Restrictions", value=str(active_restrictions), inline=True)
     embed.set_footer(text="Search logs or view restricted users below.")
     return embed

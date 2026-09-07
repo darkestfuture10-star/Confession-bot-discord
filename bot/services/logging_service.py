@@ -1,9 +1,13 @@
+import logging
 from datetime import timezone
 
 import discord
 
 from bot.database.models import Confession, Server
 from bot.utils.embeds import theme_color
+
+
+logger = logging.getLogger("confession_bot.logging_service")
 
 
 ACTION_TEMPLATES = {
@@ -89,8 +93,15 @@ async def send_moderation_log(
             await channel.send(embed=embed, view=view)
         else:
             await channel.send(embed=embed)
-    except discord.HTTPException:
-        pass
+    except discord.HTTPException as error:
+        # The audit record itself already landed in the database via add_log()
+        # elsewhere — this is only the Discord-channel notification failing.
+        # Silently dropping it would leave you with zero trace of the failure,
+        # so surface it in the console/log file even though we can't retry here.
+        logger.warning(
+            "Failed to deliver moderation log (%s) for confession #%s in guild %s: %s",
+            action, confession.id, guild.id, error,
+        )
 
 
 async def send_event_log(
@@ -118,5 +129,8 @@ async def send_event_log(
 
     try:
         await channel.send(embed=embed)
-    except discord.HTTPException:
-        pass
+    except discord.HTTPException as error:
+        logger.warning(
+            "Failed to deliver event log (%s) in guild %s: %s",
+            title, guild.id, error,
+        )

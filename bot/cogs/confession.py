@@ -160,10 +160,6 @@ class ModerationView(discord.ui.View):
 
 
 async def submit_confession(interaction: discord.Interaction, message: str, parent_id: int | None = None) -> None:
-    # Defer immediately: the anti-abuse checks below do several sequential
-    # DB round-trips before we know what to say back, which can easily blow
-    # past Discord's 3-second first-response window and invalidate the
-    # interaction entirely ("Unknown interaction").
     await interaction.response.defer(ephemeral=True, thinking=True)
 
     if interaction.guild is None:
@@ -175,8 +171,6 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
         await interaction.followup.send("❌ A confession cannot be empty.", ephemeral=True)
         return
 
-    # 8.4 Mention abuse protection: neutralize @everyone/@here/user/role
-    # mentions so they render as inert text instead of resolving.
     content = discord.utils.escape_mentions(content)
 
     session = get_session()
@@ -211,7 +205,6 @@ async def submit_confession(interaction: discord.Interaction, message: str, pare
 
         confessions = ConfessionRepository(session)
 
-        # 8.1/8.2/8.3/8.7 anti-abuse checks
         block_reason = await evaluate_submission(confessions, server, interaction.user.id, content)
         if block_reason is not None:
             await interaction.followup.send(block_reason, ephemeral=True)
@@ -350,7 +343,10 @@ async def review_confession(interaction: discord.Interaction, confession_id: int
         )
         await interaction.followup.send(f"✅ Confession #{confession.id} {action}.", ephemeral=True)
         if interaction.message:
-            await interaction.message.edit(view=None)
+            try:
+                await interaction.message.edit(view=None)
+            except discord.HTTPException:
+                pass
     except Exception:
         await session.rollback()
         raise
@@ -441,6 +437,7 @@ class Confession(commands.Cog):
                 "publication_failed": "⚠️ Approved but could not be posted",
                 "review_delivery_failed": "⚠️ Saved but could not reach moderators",
                 "deleted": "🗑️ Removed by a moderator",
+                "deleted_externally": "🗑️ Removed (deleted outside the bot)",
             }
             response = f"Confession `#{confession.id}`: {labels.get(confession.status, confession.status)}"
             if confession.reply_number is not None:
@@ -448,6 +445,41 @@ class Confession(commands.Cog):
             if confession.status == "rejected" and confession.rejection_reason:
                 response += f"\nReason: {confession.rejection_reason}"
             await interaction.response.send_message(response, ephemeral=True)
+        finally:
+            await session.close()
+
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        """Reconciles the DB when a public confession message is deleted
+        outside the bot's own delete flow (e.g. by someone with Manage
+        Messages, or auto-mod). Uses the raw event since it fires even for
+        messages not in the bot's cache."""
+        if payload.guild_id is None:
+            return
+
+        session = get_session()
+        try:
+            servers = ServerRepository(session)
+            server = await servers.get(payload.guild_id)
+            if server is None or server.confession_channel_id != payload.channel_id:
+                return
+
+            confessions = ConfessionRepository(session)
+            confession = await confessions.get_by_public_message(server.id, payload.message_id)
+            if confession is None or confession.status != "approved":
+                return
+
+            await confessions.set_status(confession.id, "deleted_externally")
+            confession.status = "deleted_externally"
+            await confessions.add_log(
+                confession.id, "deleted_externally", None,
+                "Message was removed from the confession channel outside of the bot's own delete flow.",
+            )
+            await servers.clear_last_confession_message_if_matches(server.id, payload.message_id)
+
+            guild = self.bot.get_guild(payload.guild_id)
+            if guild is not None:
+                await send_moderation_log(guild, server, "deleted_externally", confession)
         finally:
             await session.close()
 

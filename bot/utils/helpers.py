@@ -28,6 +28,7 @@ def extract_confession_id_from_footer(footer_text: str | None) -> int | None:
 
 
 _DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+_MAX_DURATION = timedelta(days=3650)
 
 
 def parse_duration(value: str) -> timedelta:
@@ -36,8 +37,10 @@ def parse_duration(value: str) -> timedelta:
     if not match:
         raise ValueError("Duration must look like 10m, 2h, 3d, or 1w.")
     amount, unit = match.groups()
-    return timedelta(**{_DURATION_UNITS[unit]: int(amount)})
-
+    duration = timedelta(**{_DURATION_UNITS[unit]: int(amount)})
+    if duration > _MAX_DURATION:
+        raise ValueError("That duration is too long — use a shorter value, or leave it blank for a permanent restriction.")
+    return duration
 
 def normalize_for_comparison(content: str) -> str:
     """Collapse whitespace/case so near-identical duplicate submissions match."""

@@ -15,8 +15,12 @@ class Stats(commands.Cog):
 
     @app_commands.command(name="stats", description="View this server's confession statistics.")
     async def stats(self, interaction: discord.Interaction) -> None:
+        # Several sequential DB queries follow — defer up front so we don't
+        # risk missing Discord's 3-second first-response window.
+        await interaction.response.defer()
+
         if interaction.guild is None:
-            await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+            await interaction.followup.send("❌ This command can only be used in a server.", ephemeral=True)
             return
 
         session = get_session()
@@ -24,7 +28,7 @@ class Stats(commands.Cog):
             servers = ServerRepository(session)
             server = await servers.get(interaction.guild.id)
             if server is None:
-                await interaction.response.send_message("ℹ️ This server hasn't been configured yet.", ephemeral=True)
+                await interaction.followup.send("ℹ️ This server hasn't been configured yet.", ephemeral=True)
                 return
 
             confessions = ConfessionRepository(session)
@@ -49,7 +53,7 @@ class Stats(commands.Cog):
         embed.add_field(name="Approval Required", value="✅ Yes" if server.approval_enabled else "❌ No", inline=True)
         embed.add_field(name="Theme", value=theme_label(server.theme), inline=True)
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="privacy", description="See what data this bot stores about confessions.")
     async def privacy(self, interaction: discord.Interaction) -> None:

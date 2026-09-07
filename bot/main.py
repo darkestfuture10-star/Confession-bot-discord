@@ -1,3 +1,4 @@
+import logging
 import os
 
 import discord
@@ -12,7 +13,8 @@ from bot.database.connection import (
 )
 from bot.cogs.confession import ModerationView, PublicConfessionView, ReplyOnlyView
 from bot.errors.handlers import handle_app_command_error
-from bot.utils.logger import get_logger, setup_logging
+from bot.utils.error_reporting import DiscordWebhookLogHandler
+from bot.utils.logger import LOG_FORMAT, get_logger, setup_logging
 
 
 # Configuration
@@ -20,6 +22,7 @@ from bot.utils.logger import get_logger, setup_logging
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
+ERROR_WEBHOOK_URL = os.getenv("ERROR_WEBHOOK_URL")  # optional — alerts are skipped if unset
 
 if not TOKEN:
     raise RuntimeError(
@@ -39,9 +42,10 @@ class ConfessionBot(commands.Bot):
         intents = discord.Intents.default()
 
         super().__init__(
-            command_prefix="!",
+            command_prefix=commands.when_mentioned,
             intents=intents,
         )
+        self.error_webhook_handler: DiscordWebhookLogHandler | None = None
 
     async def setup_hook(self):
         """Initialize bot services before connecting to Discord."""
@@ -58,6 +62,17 @@ class ConfessionBot(commands.Bot):
         except Exception:
             logger.exception("Database setup failed.")
             raise
+
+        # Error alerting
+
+        if ERROR_WEBHOOK_URL:
+            self.error_webhook_handler = DiscordWebhookLogHandler(ERROR_WEBHOOK_URL)
+            self.error_webhook_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+            self.error_webhook_handler.start()
+            logging.getLogger().addHandler(self.error_webhook_handler)
+            logger.info("Error-alert webhook configured.")
+        else:
+            logger.info("No ERROR_WEBHOOK_URL configured — skipping Discord error alerts.")
 
         # Persistent views
 
@@ -103,6 +118,9 @@ class ConfessionBot(commands.Bot):
         """Cleanly shut down the bot and database."""
 
         logger.info("Shutting down Confession Bot...")
+
+        if self.error_webhook_handler is not None:
+            self.error_webhook_handler.stop()
 
         try:
             await close_database()
@@ -153,4 +171,4 @@ async def on_app_command_error(
 
 if __name__ == "__main__":
     logger.info("Starting Confession Bot...")
-    bot.run(TOKEN)
+    bot.run(TOKEN, log_handler=None)
