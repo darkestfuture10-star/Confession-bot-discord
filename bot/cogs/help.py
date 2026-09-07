@@ -42,7 +42,7 @@ HELP_SECTIONS = [
         "title": "Replying to a Confession",
         "description": (
             "Every confession has a **💬 Reply** button. Replies get their own "
-            "separate numbering like  *Anonymous Reply #1, #2 ...* 
+            "separate numbering like *Anonymous Reply #1, #2 ...*\n"
             "Replies go through the same review process as regular confessions "
             "when moderator approval is enabled, and appear threaded under the "
             "original message once posted."
