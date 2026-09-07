@@ -1,11 +1,12 @@
 import logging
 import os
+import threading
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
-
+from flask import Flask
 from bot.database.connection import (
     close_database,
     initialize_database,
@@ -167,9 +168,36 @@ async def on_app_command_error(
         error,
     )
 
+# Web
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "Whisper is online!"
+
+
+@app.route("/health")
+def health():
+    return "OK"
+
+
+def run_web():
+    port = int(os.getenv("PORT", 3000))
+    app.run(
+        host="0.0.0.0",
+        port=port,
+    )
 
 # Start Bot
 
 if __name__ == "__main__":
     logger.info("Starting Confession Bot...")
+
+    threading.Thread(
+        target=run_web,
+        daemon=True,
+    ).start()
+
     bot.run(TOKEN, log_handler=None)
