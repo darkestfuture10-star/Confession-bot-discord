@@ -878,3 +878,8 @@ Statistics
 ```
 
 Built with Python, discord.py, PostgreSQL, and SQLAlchemy.
+
+
+
+
+**Created by EasyMade**
