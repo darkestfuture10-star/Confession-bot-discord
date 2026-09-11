@@ -49,16 +49,14 @@ HELP_SECTIONS = [
         ),
     },
     {
-        "label": "Checking & Privacy",
-        "emoji": "🔒",
-        "title": "Checking Status & Your Privacy",
+        "label": "Checking",
+        "emoji": "🔍",
+        "title": "Checking Status",
         "description": (
             "**/confession-status** `<id>` — check whether one of your own "
             "confessions is pending, approved, or rejected.\n\n"
             "**/stats** — this server's confession totals, approval breakdown, "
-            "and recent activity.\n\n"
-            "**/privacy** — a plain summary of exactly what data this bot "
-            "stores and who can see it."
+            "and recent activity."
         ),
     },
     {
@@ -85,6 +83,22 @@ HELP_SECTIONS = [
             "and sensitive-content alerts.\n\n"
             "The panel updates live as you change settings — no need to rerun "
             "the command to see the new values."
+        ),
+    },
+    {
+        "label": "Privacy",
+        "emoji": "🔒",
+        "title": "Privacy & Data",
+        "description": (
+            "This bot stores only what's needed to run the confession system:\n\n"
+            "• Your Discord user ID and the text of anything you submit\n"
+            "• Timestamps for when things were submitted/reviewed\n\n"
+            "**Who can see your identity:** only server moderators, and only when "
+            "reviewing or investigating a confession — your username is never shown "
+            "in the public confession channel. Moderator-facing logs keep your name "
+            "behind a spoiler tag so it isn't shown by accident.\n\n"
+            "We don't store usernames, avatars, or any message history beyond the "
+            "confession text itself."
         ),
     },
 ]

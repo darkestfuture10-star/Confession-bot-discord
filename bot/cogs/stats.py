@@ -55,25 +55,6 @@ class Stats(commands.Cog):
 
         await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="privacy", description="See what data this bot stores about confessions.")
-    async def privacy(self, interaction: discord.Interaction) -> None:
-        embed = discord.Embed(
-            title="🔒 Privacy & Data",
-            description=(
-                "This bot stores only what's needed to run the confession system:\n\n"
-                "• Your Discord user ID and the text of anything you submit\n"
-                "• Timestamps for when things were submitted/reviewed\n\n"
-                "**Who can see your identity:** only server moderators, and only when reviewing "
-                "or investigating a confession — your username is never shown in the public "
-                "confession channel. Moderator-facing logs keep your name behind a spoiler tag "
-                "so it isn't shown by accident.\n\n"
-                "We don't store usernames, avatars, or any message history beyond the confession "
-                "text itself."
-            ),
-            color=discord.Color.blurple(),
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Stats(bot))

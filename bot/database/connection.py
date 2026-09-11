@@ -9,15 +9,11 @@ from sqlalchemy.orm import DeclarativeBase
 from bot.config.settings import DATABASE_URL
 
 
-
 # Database
 
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    connect_args={
-        "ssl": "require",
-    },
 )
 
 AsyncSessionLocal = async_sessionmaker(
@@ -36,6 +32,63 @@ async def test_database_connection():
 
     async with engine.connect() as connection:
         await connection.run_sync(lambda _: None)
+
+
+# Every column the current models actually declare, per table. Used to
+# auto-heal tables that predate the current schema (older builds of this
+# bot used different column sets) — anything NOT NULL with no default that
+# isn't in this list gets relaxed, since a leftover mandatory column with
+# no way to populate it blocks every INSERT.
+CURRENT_MODEL_COLUMNS = {
+    "servers": {
+        "id",
+        "confession_channel_id",
+        "moderator_role_id",
+        "approval_enabled",
+        "logging_enabled",
+        "logging_channel_id",
+        "last_confession_message_id",
+        "theme",
+        "next_reply_number",
+        "sensitive_content_detection",
+    },
+    "confessions": {
+        "id",
+        "server_id",
+        "user_id",
+        "content",
+        "status",
+        "submitted_at",
+        "reviewed_at",
+        "reviewed_by_id",
+        "rejection_reason",
+        "public_message_id",
+        "parent_id",
+        "reply_number",
+    },
+}
+
+
+async def _heal_legacy_not_null_columns(connection) -> None:
+    for table_name, known_columns in CURRENT_MODEL_COLUMNS.items():
+        result = await connection.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = :table_name
+                  AND is_nullable = 'NO'
+                  AND column_default IS NULL
+                """
+            ),
+            {"table_name": table_name},
+        )
+        legacy_not_null_columns = {row[0] for row in result} - known_columns
+
+        for column_name in legacy_not_null_columns:
+            await connection.execute(
+                text(f'ALTER TABLE {table_name} ALTER COLUMN "{column_name}" DROP NOT NULL')
+            )
 
 
 async def initialize_database():
@@ -84,6 +137,7 @@ async def initialize_database():
                 """
             )
         )
+
         await connection.execute(
             text(
                 """
@@ -122,43 +176,11 @@ async def initialize_database():
             text("CREATE INDEX IF NOT EXISTS ix_confessions_status ON confessions (status)")
         )
 
-        # Earlier builds of this bot used a different confessions schema (e.g. an
-        # "approved" boolean column). ``create_all``/``ADD COLUMN`` never drops or
-        # relaxes old columns, so any leftover NOT NULL column with no default
-        # blocks every insert. Auto-heal by dropping NOT NULL from anything the
-        # current model doesn't know about.
-        current_model_columns = {
-            "id",
-            "server_id",
-            "user_id",
-            "content",
-            "status",
-            "submitted_at",
-            "reviewed_at",
-            "reviewed_by_id",
-            "rejection_reason",
-            "public_message_id",
-            "parent_id",
-            "reply_number",
-        }
-
-        result = await connection.execute(
-            text(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name = 'confessions'
-                  AND is_nullable = 'NO'
-                  AND column_default IS NULL
-                """
-            )
-        )
-        legacy_not_null_columns = {row[0] for row in result} - current_model_columns
-
-        for column_name in legacy_not_null_columns:
-            await connection.execute(
-                text(f'ALTER TABLE confessions ALTER COLUMN "{column_name}" DROP NOT NULL')
-            )
+        # Earlier builds of this bot used different schemas for both tables
+        # (e.g. an "approved" boolean on confessions, a "created_at" column
+        # on servers). Auto-heal any leftover mandatory columns that aren't
+        # part of the current models, on every table we know about.
+        await _heal_legacy_not_null_columns(connection)
 
 
 def get_session() -> AsyncSession:
