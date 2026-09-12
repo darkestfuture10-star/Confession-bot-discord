@@ -23,6 +23,11 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# ============================================================
+# FEEDBACK
+# ============================================================
+
+FEEDBACK_FORM_URL = os.getenv("FEEDBACK_FORM_URL")  # optional — feedback page is hidden from /help if unset
 
 # ============================================================
 # VALIDATION

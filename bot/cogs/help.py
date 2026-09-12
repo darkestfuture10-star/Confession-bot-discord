@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from bot.config.settings import FEEDBACK_FORM_URL
 from bot.database.connection import get_session
 from bot.database.repository import ServerRepository
 from bot.utils.embeds import theme_color
@@ -17,7 +18,7 @@ HELP_SECTIONS = [
             "and replies, with an optional moderator review step before anything "
             "goes public.\n\n"
             "**Quick command list**\n"
-            "`/confess` · `/confession-status` · `/stats` · `/privacy`\n\n"
+            "`/confess` · `/confession-status` · `/stats`\n\n"
             "Use the menu below, or the ◀ ▶ buttons, to browse this guide."
         ),
     },
@@ -26,8 +27,9 @@ HELP_SECTIONS = [
         "emoji": "📝",
         "title": "Submitting a Confession",
         "description": (
-            "**/confess** `<message>` submit an anonymous confession (up to 2,000 characters).\n\n"
-            "• Your identity is never shown publicly."
+            "**/confess** `<message>` — submit an anonymous confession (up to 2,000 characters).\n\n"
+            "• Your identity is never shown publicly — only moderators can see who "
+            "submitted something, and only while reviewing it.\n"
             "• A short cooldown applies between submissions, plus an hourly limit, "
             "to keep things spam-free.\n"
             "• Any @mentions you include are automatically neutralized so they "
@@ -42,7 +44,8 @@ HELP_SECTIONS = [
         "title": "Replying to a Confession",
         "description": (
             "Every confession has a **💬 Reply** button. Replies get their own "
-            "separate numbering like *Anonymous Reply #1, #2 ...*\n"
+            "separate numbering — *Anonymous Reply #1, #2, ...* — so they're "
+            "easy to tell apart from top-level confessions.\n\n"
             "Replies go through the same review process as regular confessions "
             "when moderator approval is enabled, and appear threaded under the "
             "original message once posted."
@@ -60,11 +63,28 @@ HELP_SECTIONS = [
         ),
     },
     {
+        "label": "Privacy",
+        "emoji": "🔒",
+        "title": "Privacy & Data",
+        "description": (
+            "This bot stores only what's needed to run the confession system:\n\n"
+            "• Your Discord user ID and the text of anything you submit\n"
+            "• Timestamps for when things were submitted/reviewed\n\n"
+            "**Who can see your identity:** only server moderators, and only when "
+            "reviewing or investigating a confession — your username is never shown "
+            "in the public confession channel. Moderator-facing logs keep your name "
+            "behind a spoiler tag so it isn't shown by accident.\n\n"
+            "We don't store usernames, avatars, or any message history beyond the "
+            "confession text itself."
+        ),
+    },
+    {
         "label": "For Moderators",
         "emoji": "🛡️",
         "title": "Moderator Tools",
         "description": (
-            "These commands require the **Manage Messages** permission:\n\n"
+            "These commands require the **Manage Messages** permission (or being "
+            "the server owner):\n\n"
             "**/moderation-panel** — the review queue, 🗑️ Delete a posted "
             "confession, 🔨 Restrict / 🔓 Unrestrict a user, ⏱️ Waive a user's "
             "cooldown.\n\n"
@@ -86,22 +106,21 @@ HELP_SECTIONS = [
         ),
     },
     {
-        "label": "Privacy",
-        "emoji": "🔒",
-        "title": "Privacy & Data",
+        "label": "Feedback",
+        "emoji": "📮",
+        "title": "Feedback",
         "description": (
-            "This bot stores only what's needed to run the confession system:\n\n"
-            "• Your Discord user ID and the text of anything you submit\n"
-            "• Timestamps for when things were submitted/reviewed\n\n"
-            "**Who can see your identity:** only server moderators, and only when "
-            "reviewing or investigating a confession — your username is never shown "
-            "in the public confession channel. Moderator-facing logs keep your name "
-            "behind a spoiler tag so it isn't shown by accident.\n\n"
-            "We don't store usernames, avatars, or any message history beyond the "
-            "confession text itself."
+            "Found a bug, or have an idea for this bot? Use the link below to "
+            "share it — every bit of feedback helps."
         ),
+        "is_feedback": True,
     },
 ]
+
+# The feedback page only makes sense to show if a form URL is actually
+# configured — otherwise drop it from the guide entirely.
+if not FEEDBACK_FORM_URL:
+    HELP_SECTIONS = [section for section in HELP_SECTIONS if not section.get("is_feedback")]
 
 
 async def _resolve_color(interaction: discord.Interaction) -> discord.Color:
@@ -120,6 +139,7 @@ class HelpView(discord.ui.View):
         super().__init__(timeout=180)
         self.color = color
         self.page = 0
+        self.feedback_button: discord.ui.Button | None = None
         self._update_buttons()
 
     def build_embed(self) -> discord.Embed:
@@ -135,6 +155,19 @@ class HelpView(discord.ui.View):
     def _update_buttons(self) -> None:
         self.previous_button.disabled = self.page <= 0
         self.next_button.disabled = self.page >= len(HELP_SECTIONS) - 1
+
+        if self.feedback_button is not None:
+            self.remove_item(self.feedback_button)
+            self.feedback_button = None
+
+        if HELP_SECTIONS[self.page].get("is_feedback") and FEEDBACK_FORM_URL:
+            self.feedback_button = discord.ui.Button(
+                label="Open Feedback Form",
+                style=discord.ButtonStyle.link,
+                url=FEEDBACK_FORM_URL,
+                row=2,
+            )
+            self.add_item(self.feedback_button)
 
     @discord.ui.select(
         placeholder="Jump to a section...",
